@@ -107,6 +107,9 @@ class Watcher:
             "stay": {
                 "checkin": watch.checkin_date.isoformat(),
                 "checkout": watch.checkout_date.isoformat(),
+                "people": watch.num_people,
+                "smoking": watch.smoking_type,
+                "roomType": watch.room_type,
             },
         }
         notification = Notification(watch_id=watch.id, payload=json.dumps(payload))

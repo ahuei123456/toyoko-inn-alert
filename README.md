@@ -3,7 +3,8 @@
 A high-performance Python backend for monitoring Toyoko Inn hotel availability.
 
 ## Quick Links
-- [Technical Specification](SYSTEM.md): Internal architecture, API reverse engineering, and roadmap.
+- [Backend Technical Specification](BACKEND_SYSTEM.md): Backend architecture, API reverse engineering, and roadmap.
+- [Discord Frontend Technical Specification](DISCORD_FRONTEND_SYSTEM.md): Slash-command bot architecture, webhook bridge, and roadmap.
 - [API Contract](docs/API_CONTRACT.md): Public documentation for frontend developers (e.g., Discord bot).
 - [Deployment Guide](docs/DEPLOYMENT.md): Environment variables, Docker deployment, admin access, backup/restore, and post-deploy checks.
 

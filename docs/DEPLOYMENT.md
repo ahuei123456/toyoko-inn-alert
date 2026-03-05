@@ -13,6 +13,7 @@ This guide covers production-style deployment for the current backend implementa
 
 - `ADMIN_USERNAME`: HTTP Basic username for `/admin`
 - `ADMIN_PASSWORD`: HTTP Basic password for `/admin`
+- `WEBHOOK_SIGNATURE_SECRET`: Secret key used to generate an HMAC-SHA256 signature for outgoing webhooks. Must be shared with clients to verify payloads.
 
 Optional:
 
@@ -127,6 +128,28 @@ If schema changes are introduced in future updates, add and run migrations befor
 - Put the API behind HTTPS (reverse proxy or managed ingress).
 - Restrict admin path exposure (`/admin`) with network controls if possible.
 - Rotate API keys periodically via admin panel or `scripts/manage_keys.py`.
+
+### Webhook Signatures
+
+To ensure that the outbound webhook notifications are genuinely from the Toyoko Inn Alert system, configure `WEBHOOK_SIGNATURE_SECRET`. The system computes an HMAC-SHA256 hash of the raw JSON payload and sends it in the `X-Toyoko-Signature` header.
+
+**Verification Example (Python):**
+```python
+import hmac
+import hashlib
+
+def verify_signature(secret: str, raw_payload: bytes, signature_header: str) -> bool:
+    expected_signature = hmac.new(
+        secret.encode("utf-8"), raw_payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected_signature, signature_header)
+```
+
+**Secret Rotation:**
+To rotate the webhook signature secret:
+1. Update the `WEBHOOK_SIGNATURE_SECRET` environment variable in your deployment environment or `.env` file.
+2. Restart the deployment (e.g., `docker compose down` and `docker compose up -d`).
+3. Update your frontend/discord bot consumer to expect the new secret.
 
 ## 9. Viewing Logs
 

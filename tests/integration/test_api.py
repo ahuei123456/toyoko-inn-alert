@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
-from toyoko_inn_alert.api import app, get_session
+from toyoko_inn_alert.api import ADMIN_PASSWORD, ADMIN_USERNAME, app, get_session
 from toyoko_inn_alert.db import APIKey, Watch
 
 
@@ -96,7 +96,67 @@ def test_create_watch_invalid_hotel(client: TestClient, api_key: str):
         headers={"X-API-Key": api_key},
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid hotel code"
+    assert response.json()["detail"]["code"] == "INVALID_HOTEL_CODE"
+
+
+def test_create_watch_max_active_watches(
+    client: TestClient, session: Session, api_key: str
+):
+    # Add 10 watches manually
+    for i in range(10):
+        watch = Watch(
+            hotel_code="00088",
+            checkin_date=datetime.now() + timedelta(days=i),
+            checkout_date=datetime.now() + timedelta(days=i + 1),
+            user_id="user_max",
+            callback_url="https://example.com",
+        )
+        session.add(watch)
+    session.commit()
+
+    response = client.post(
+        "/watches",
+        json={
+            "hotel_code": "00088",
+            "checkin_date": (datetime.now() + timedelta(days=20)).isoformat(),
+            "checkout_date": (datetime.now() + timedelta(days=21)).isoformat(),
+            "user_id": "user_max",
+            "callback_url": "https://example.com/callback",
+        },
+        headers={"X-API-Key": api_key},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "MAX_ACTIVE_WATCHES"
+
+
+def test_create_watch_duplicate(client: TestClient, session: Session, api_key: str):
+    checkin = datetime.now() + timedelta(days=10)
+    checkout = datetime.now() + timedelta(days=11)
+
+    # Add 1 watch manually
+    watch = Watch(
+        hotel_code="00088",
+        checkin_date=checkin,
+        checkout_date=checkout,
+        user_id="user_dup",
+        callback_url="https://example.com",
+    )
+    session.add(watch)
+    session.commit()
+
+    response = client.post(
+        "/watches",
+        json={
+            "hotel_code": "00088",
+            "checkin_date": checkin.isoformat(),
+            "checkout_date": checkout.isoformat(),
+            "user_id": "user_dup",
+            "callback_url": "https://example.com/callback",
+        },
+        headers={"X-API-Key": api_key},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DUPLICATE_WATCH"
 
 
 def test_list_watches(client: TestClient, session: Session, api_key: str):
@@ -118,7 +178,9 @@ def test_list_watches(client: TestClient, session: Session, api_key: str):
 
 
 def _admin_headers() -> dict[str, str]:
-    token = base64.b64encode(b"admin:admin").decode("ascii")
+    token = base64.b64encode(
+        f"{ADMIN_USERNAME}:{ADMIN_PASSWORD}".encode("ascii")
+    ).decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
 

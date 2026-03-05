@@ -1,4 +1,4 @@
-# Toyoko Inn Alert System - API Contract v1
+# Toyoko Inn Alert System - API Contract v1.1
 
 This document defines the formal interface between the Toyoko Inn Alert Backend and any consuming frontends (Discord Bots, Web Dashboards, etc.).
 
@@ -42,6 +42,15 @@ Add a new hotel to the monitor list.
 }
 ```
 
+#### Rejection Semantics (Required)
+- Duplicate watch for same `userId` and parameters:
+  - **HTTP:** `409 Conflict`
+  - **Code:** `DUPLICATE_WATCH`
+- Max active watches reached for `userId`:
+  - **HTTP:** `409 Conflict`
+  - **Code:** `MAX_ACTIVE_WATCHES`
+  - **Message:** `"You can only have up to 10 active watches."`
+
 ### GET /watches/{user_id}
 List all active monitors for a user.
 
@@ -56,6 +65,8 @@ When the backend detects availability, it will POST to the `callbackUrl` provide
 ### Webhook Verification
 The backend signs the payload so you can verify it came from us.
 - **Header:** `X-Toyoko-Signature: <hmac_sha256_hash>`
+- **Algorithm:** HMAC-SHA256 over raw JSON body bytes.
+- **Secret:** Shared secret configured on backend (for example `WEBHOOK_SIGNATURE_SECRET`) and frontend verifier.
 
 ### Webhook Payload (JSON)
 ```json
@@ -81,5 +92,24 @@ The backend signs the payload so you can verify it came from us.
 
 ## 4. Error Handling
 - **401 Unauthorized:** Missing or invalid `X-API-Key`.
+- **409 Conflict:** Business-rule rejection (for example `DUPLICATE_WATCH`, `MAX_ACTIVE_WATCHES`).
 - **422 Unprocessable Entity:** Invalid date format or missing fields.
 - **429 Too Many Requests:** Frontend is exceeding the API rate limit.
+
+### Error Response Shape (Machine-Readable)
+Frontend clients should parse a stable error code for user-facing messaging.
+
+```json
+{
+  "detail": {
+    "code": "MAX_ACTIVE_WATCHES",
+    "message": "You can only have up to 10 active watches."
+  }
+}
+```
+
+#### Known Error Codes
+- `MAX_ACTIVE_WATCHES`: User already has 10 active watches.
+- `DUPLICATE_WATCH`: Same watch already exists for this user.
+- `INVALID_HOTEL_CODE`: Unknown hotel code.
+- `INVALID_DATE_RANGE`: `checkinDate` is not before `checkoutDate`.

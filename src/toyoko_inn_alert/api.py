@@ -182,7 +182,10 @@ async def create_watch(
             watch.user_id,
             watch.hotel_code,
         )
-        raise HTTPException(status_code=400, detail="Invalid hotel code")
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_HOTEL_CODE", "message": "Invalid hotel code"},
+        )
 
     if watch.checkin_date >= watch.checkout_date:
         logger.warning(
@@ -191,9 +194,34 @@ async def create_watch(
             watch.checkin_date.isoformat(),
             watch.checkout_date.isoformat(),
         )
-        raise HTTPException(status_code=400, detail="Check-in must be before check-out")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_DATES",
+                "message": "Check-in must be before check-out",
+            },
+        )
 
-    # 2. Deduplication check
+    # 2. Max Active Watches check
+    active_watches_count = session.exec(
+        select(func.count()).select_from(Watch).where(Watch.user_id == watch.user_id)
+    ).one()
+
+    if active_watches_count >= 10:
+        logger.warning(
+            "watch_create_rejected_max_watches user_id=%s count=%d",
+            watch.user_id,
+            active_watches_count,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MAX_ACTIVE_WATCHES",
+                "message": "You can only have up to 10 active watches.",
+            },
+        )
+
+    # 3. Deduplication check
     existing = session.exec(
         select(Watch).where(
             Watch.hotel_code == watch.hotel_code,
@@ -210,7 +238,11 @@ async def create_watch(
             existing.id,
         )
         raise HTTPException(
-            status_code=409, detail="Watch already exists for this user and date"
+            status_code=409,
+            detail={
+                "code": "DUPLICATE_WATCH",
+                "message": "Watch already exists for this user and date",
+            },
         )
 
     # 3. Instant Hit Check
@@ -242,6 +274,9 @@ async def create_watch(
                 "stay": {
                     "checkin": watch.checkin_date.isoformat(),
                     "checkout": watch.checkout_date.isoformat(),
+                    "people": watch.num_people,
+                    "smoking": watch.smoking_type,
+                    "roomType": watch.room_type,
                 },
             }
             # We need to save the watch first to get an ID

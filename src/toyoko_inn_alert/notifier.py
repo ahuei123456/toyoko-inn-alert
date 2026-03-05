@@ -1,6 +1,9 @@
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import os
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
@@ -16,6 +19,7 @@ logger = logging.getLogger("toyoko.notifier")
 class Notifier:
     def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
+        self.secret = os.getenv("WEBHOOK_SIGNATURE_SECRET")
 
     async def process_queue(self):
         """
@@ -84,7 +88,20 @@ class Notifier:
             # Add booking URL helper
             payload["bookingUrl"] = self._generate_booking_url(watch)
 
-            response = await client.post(watch.callback_url, json=payload)
+            headers = {}
+            if self.secret:
+                raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                signature = hmac.new(
+                    self.secret.encode("utf-8"), raw_payload, hashlib.sha256
+                ).hexdigest()
+                headers["X-Toyoko-Signature"] = signature
+                headers["Content-Type"] = "application/json"
+                response = await client.post(
+                    watch.callback_url, content=raw_payload, headers=headers
+                )
+            else:
+                response = await client.post(watch.callback_url, json=payload)
+
             response.raise_for_status()
 
             notification.status = "sent"

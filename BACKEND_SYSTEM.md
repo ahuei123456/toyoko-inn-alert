@@ -25,6 +25,7 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
     - `hotelCode` exists in `hotels.json`.
     - `checkinDate` is today or in the future (JST).
     - `checkinDate < checkoutDate`.
+    - Max active watches per `userId` is enforced (`10`).
 - **Instant Hit Logic:** Upon successful `POST /watches`, the API performs an immediate check. If the hotel is already available, a notification is queued immediately.
 - **Endpoints:**
     - `POST /watches`: Add a new hotel/date combination to monitor.
@@ -48,6 +49,9 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 - **Reliability:**
     - Local SQLite queue ensures no alerts are lost during bot downtime.
     - Decoupled "Producer" (Watcher) and "Consumer" (Bot API/Bridge).
+- **Webhook Signing Requirement:**
+    - Outbound webhook requests include `X-Toyoko-Signature` (HMAC-SHA256 of raw JSON payload).
+    - Signing key is provided by environment variable (e.g. `WEBHOOK_SIGNATURE_SECRET`).
 
 ### Discovery Engine (`src/toyoko_inn_alert/discovery.py`)
 ...
@@ -68,6 +72,9 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 
 ### Phase 4: Integration
 - [ ] Implement the Webhook Callback system to notify external frontends.
+- [ ] Add webhook signature header (`X-Toyoko-Signature`) in notifier.
+- [ ] Add machine-readable API error codes for frontend UX mapping.
+- [ ] Enforce max active watch limit per user (`10`) at API layer.
 
 ### Phase 5: Deployment & Containerization
 - [ ] Create `Dockerfile` (optimized multi-stage build using `uv`).
@@ -80,6 +87,8 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 ### A. Inbound (REST API)
 - **OpenAPI:** Automatically served at `/openapi.json`.
 - **Auth:** All requests require `X-API-Key` header.
+- **Business Limits:**
+  - Maximum `10` active watches per `userId`.
 - **`POST /watches` Request Body:**
   ```json
   {
@@ -117,6 +126,18 @@ The frontend MUST implement an endpoint that accepts this POST body:
 
 ### C. Security
 - **Webhook Verification:** Outbound payloads include `X-Toyoko-Signature` (HMAC-SHA256) for the frontend to verify authenticity.
+- **Signing Secret:** Backend must use configured secret key (e.g. `WEBHOOK_SIGNATURE_SECRET`) and should fail fast on startup if signature mode is required but secret is missing.
+
+### D. Error Contract (Required for Frontend UX)
+- `POST /watches` duplicate watch:
+  - `409 Conflict`
+  - `detail.code = "DUPLICATE_WATCH"`
+- `POST /watches` max active watches reached:
+  - `409 Conflict`
+  - `detail.code = "MAX_ACTIVE_WATCHES"`
+  - `detail.message = "You can only have up to 10 active watches."`
+- Invalid request parameters:
+  - `400` or `422` with stable `detail.code` where possible.
 
 ## 5. Operational Safeguards
 
@@ -156,8 +177,31 @@ The frontend MUST implement an endpoint that accepts this POST body:
 - **External APIs**: NEVER hit the real Toyoko Inn API during automated tests. Use `respx` to mock tRPC responses.
 - **Time**: Use `freezegun` to test time-sensitive polling logic and notification expiration.
 
+### Additional Required Tests (Discord Frontend Integration)
+- API test for `MAX_ACTIVE_WATCHES` rejection after the 10th active watch for one `userId`.
+- API test for duplicate-watch rejection returning `DUPLICATE_WATCH`.
+- Notifier test that `X-Toyoko-Signature` is present and verifiable.
+- Notifier test ensuring payload schema remains compatible with frontend embed rendering.
+
 ## 8. Coding Standards
 - **Manager:** `uv` for dependencies.
 - **Linter/Formatter:** `ruff`.
 - **Type Checker:** `pyrefly`.
 - **Testing:** `pytest` (mocking tRPC responses is mandatory).
+
+## 9. Required Work for Discord Frontend Integration (2026-03-05)
+
+### Priority 1 (Blockers)
+- [ ] Emit `X-Toyoko-Signature` from notifier on every webhook POST.
+- [ ] Add configurable `WEBHOOK_SIGNATURE_SECRET` for signing.
+- [ ] Enforce max 10 active watches per `userId` in `POST /watches`.
+- [ ] Return machine-readable error code `MAX_ACTIVE_WATCHES` when limit is exceeded.
+
+### Priority 2 (Strongly Recommended)
+- [ ] Return machine-readable error code `DUPLICATE_WATCH` for duplicate creation attempts.
+- [ ] Keep stable error payload shape for frontend mapping (`detail.code`, `detail.message`).
+- [ ] Expand webhook `stay` payload with `people`, `smoking`, `roomType` when available to improve alert display fidelity.
+
+### Priority 3 (Operational)
+- [ ] Document signature rollout and secret rotation in deployment docs.
+- [ ] Add regression tests for the error contract and signature behavior.
