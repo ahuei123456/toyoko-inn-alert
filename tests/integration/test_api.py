@@ -99,6 +99,18 @@ def test_create_watch_invalid_hotel(client: TestClient, api_key: str):
     assert response.json()["detail"]["code"] == "INVALID_HOTEL_CODE"
 
 
+def test_missing_api_key_returns_machine_readable_error(client: TestClient):
+    response = client.get("/watches/user123")
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_API_KEY"
+
+
+def test_invalid_api_key_returns_machine_readable_error(client: TestClient):
+    response = client.get("/watches/user123", headers={"X-API-Key": "bad_key"})
+    assert response.status_code == 401
+    assert response.json()["detail"]["code"] == "INVALID_API_KEY"
+
+
 def test_create_watch_max_active_watches(
     client: TestClient, session: Session, api_key: str
 ):
@@ -175,6 +187,14 @@ def test_list_watches(client: TestClient, session: Session, api_key: str):
     assert response.status_code == 200
     assert len(response.json()) == 1
     assert response.json()[0]["hotel_code"] == "00088"
+
+
+def test_delete_watch_not_found_returns_machine_readable_error(
+    client: TestClient, api_key: str
+):
+    response = client.delete("/watches/999999", headers={"X-API-Key": api_key})
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "WATCH_NOT_FOUND"
 
 
 def _admin_headers() -> dict[str, str]:

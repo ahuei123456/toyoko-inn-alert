@@ -22,10 +22,9 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 ### API Layer (`src/toyoko_inn_alert/api.py`)
 - **Framework:** FastAPI.
 - **Mandatory Validations:**
-    - `hotelCode` exists in `hotels.json`.
-    - `checkinDate` is today or in the future (JST).
-    - `checkinDate < checkoutDate`.
-    - Max active watches per `userId` is enforced (`10`).
+    - `hotel_code` exists in `hotels.json`.
+    - `checkin_date < checkout_date`.
+    - Max active watches per `user_id` is enforced (`10`).
 - **Instant Hit Logic:** Upon successful `POST /watches`, the API performs an immediate check. If the hotel is already available, a notification is queued immediately.
 - **Endpoints:**
     - `POST /watches`: Add a new hotel/date combination to monitor.
@@ -36,7 +35,7 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 ### Polling Engine (`src/toyoko_inn_alert/watcher.py`)
 - **Type:** Background service (or `FastAPI` BackgroundTask/`Celery` for scale).
 - **Strategy:** Group active watches by `(checkin_date, checkout_date, people, smoking)`.
-  - *Note: `roomType` is ignored in grouping as it is currently a placeholder.*
+  - *Note: `room_type` is ignored in grouping as it is currently a placeholder.*
 - **Batching:** Chunk up to 10 `hotelCodes` per tRPC request.
 - **Throttling:** Conservative polling (1–4 hours).
 
@@ -88,41 +87,44 @@ A high-performance Python-based alert system that monitors Toyoko Inn hotel avai
 - **OpenAPI:** Automatically served at `/openapi.json`.
 - **Auth:** All requests require `X-API-Key` header.
 - **Business Limits:**
-  - Maximum `10` active watches per `userId`.
+  - Maximum `10` active watches per `user_id`.
 - **`POST /watches` Request Body:**
   ```json
   {
-    "hotelCode": "00088",
-    "checkinDate": "2026-03-04",
-    "checkoutDate": "2026-03-05",
-    "numberOfPeople": 1,
-    "smokingType": "noSmoking",
-    "roomType": 10,
-    "userId": "discord_12345",
-    "callbackUrl": "https://bot.service/api/notify"
+    "hotel_code": "00088",
+    "checkin_date": "2026-03-14T00:00:00+00:00",
+    "checkout_date": "2026-03-15T00:00:00+00:00",
+    "num_people": 1,
+    "smoking_type": "noSmoking",
+    "room_type": 10,
+    "user_id": "discord_12345",
+    "callback_url": "https://bot.service/api/notify"
   }
   ```
 
 ### B. Outbound (Webhook Payload)
 The frontend MUST implement an endpoint that accepts this POST body:
-- **`POST {callbackUrl}` Request Body:**
+- **`POST {callback_url}` Request Body:**
   ```json
   {
     "event": "AVAILABILITY_FOUND",
-    "timestamp": "2026-03-04T12:00:00Z",
+    "timestamp": "2026-03-04T12:00:00+00:00",
     "userId": "discord_12345",
     "hotel": {
       "code": "00088",
-      "name": "Toyoko INN Kitami Ekimae",
       "price": 6498
     },
     "stay": {
-      "checkin": "2026-03-04",
-      "checkout": "2026-03-05"
+      "checkin": "2026-03-14T00:00:00+00:00",
+      "checkout": "2026-03-15T00:00:00+00:00",
+      "people": 1,
+      "smoking": "noSmoking",
+      "roomType": 10
     },
     "bookingUrl": "https://www.toyoko-inn.com/search/result/room_plan/..."
   }
   ```
+  - *Note:* `event` may be `AVAILABILITY_FOUND` or `INSTANT_HIT`.
 
 ### C. Security
 - **Webhook Verification:** Outbound payloads include `X-Toyoko-Signature` (HMAC-SHA256) for the frontend to verify authenticity.
@@ -130,6 +132,9 @@ The frontend MUST implement an endpoint that accepts this POST body:
 - **Rollout Status:** Signature behavior is currently optional; this is a temporary compatibility mode and should be monitored closely until strict mode is enforced.
 
 ### D. Error Contract (Required for Frontend UX)
+- Authentication failure (missing/invalid `X-API-Key`):
+  - `401 Unauthorized`
+  - `detail.code = "INVALID_API_KEY"`
 - `POST /watches` duplicate watch:
   - `409 Conflict`
   - `detail.code = "DUPLICATE_WATCH"`
@@ -137,8 +142,12 @@ The frontend MUST implement an endpoint that accepts this POST body:
   - `409 Conflict`
   - `detail.code = "MAX_ACTIVE_WATCHES"`
   - `detail.message = "You can only have up to 10 active watches."`
+- `DELETE /watches/{watch_id}` not found:
+  - `404 Not Found`
+  - `detail.code = "WATCH_NOT_FOUND"`
 - Invalid request parameters:
-  - `400` or `422` with stable `detail.code` where possible.
+  - `400` with stable `detail.code` for backend validation (`INVALID_HOTEL_CODE`, `INVALID_DATE_RANGE`).
+  - `422` for FastAPI/Pydantic request validation errors.
 
 ## 5. Operational Safeguards
 
@@ -179,7 +188,7 @@ The frontend MUST implement an endpoint that accepts this POST body:
 - **Time**: Use `freezegun` to test time-sensitive polling logic and notification expiration.
 
 ### Additional Required Tests (Discord Frontend Integration)
-- API test for `MAX_ACTIVE_WATCHES` rejection after the 10th active watch for one `userId`.
+- API test for `MAX_ACTIVE_WATCHES` rejection after the 10th active watch for one `user_id`.
 - API test for duplicate-watch rejection returning `DUPLICATE_WATCH`.
 - Notifier test that `X-Toyoko-Signature` is present and verifiable.
 - Notifier test ensuring payload schema remains compatible with frontend embed rendering.
@@ -193,17 +202,18 @@ The frontend MUST implement an endpoint that accepts this POST body:
 ## 9. Required Work for Discord Frontend Integration (2026-03-05)
 
 ### Priority 1 (Blockers)
-- [ ] Emit `X-Toyoko-Signature` from notifier on every webhook POST.
-- [ ] Add configurable `WEBHOOK_SIGNATURE_SECRET` for signing.
-- [ ] Enforce max 10 active watches per `userId` in `POST /watches`.
-- [ ] Return machine-readable error code `MAX_ACTIVE_WATCHES` when limit is exceeded.
+- [x] Emit `X-Toyoko-Signature` from notifier when `WEBHOOK_SIGNATURE_SECRET` is configured.
+- [x] Add configurable `WEBHOOK_SIGNATURE_SECRET` for signing.
+- [x] Enforce max 10 active watches per `user_id` in `POST /watches`.
+- [x] Return machine-readable error code `MAX_ACTIVE_WATCHES` when limit is exceeded.
 - [ ] Make max-watch enforcement concurrency-safe (prevent race conditions under parallel `POST /watches` requests).
-- [ ] Fix date-range error code mismatch by standardizing on `INVALID_DATE_RANGE` in implementation and docs.
+- [x] Standardize date-range error code on `INVALID_DATE_RANGE`.
 
 ### Priority 2 (Strongly Recommended)
-- [ ] Return machine-readable error code `DUPLICATE_WATCH` for duplicate creation attempts.
-- [ ] Keep stable error payload shape for frontend mapping (`detail.code`, `detail.message`).
-- [ ] Expand webhook `stay` payload with `people`, `smoking`, `roomType` when available to improve alert display fidelity.
+- [x] Return machine-readable error code `DUPLICATE_WATCH` for duplicate creation attempts.
+- [x] Keep stable error payload shape for public API endpoints used by frontend mapping (`detail.code`, `detail.message`).
+- [x] Expand webhook `stay` payload with `people`, `smoking`, `roomType`.
+- [ ] Standardize outbound webhook field naming (currently mixed `userId`/`roomType`) with a backward-compatible migration plan to avoid breaking existing consumers.
 
 ### Priority 3 (Operational)
 - [ ] Document signature rollout and secret rotation in deployment docs.

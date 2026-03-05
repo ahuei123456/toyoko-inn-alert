@@ -1,7 +1,7 @@
 # Toyoko Inn Alert Frontend - Technical Specification
 
 ## Overview
-A Python-based Discord frontend service that provides slash commands for watch management and receives backend webhook alerts to deliver user notifications in Discord.
+A Python-based Discord frontend service specification for watch management slash commands and backend webhook alerts delivered to Discord users.
 
 This frontend is designed to follow the same bot structure pattern used in `ahuei123456/offkai-bot`:
 - A `commands.Bot` subclass as the runtime entrypoint.
@@ -27,6 +27,7 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
   - Discord user ID is mapped to backend `user_id` as `discord_<discord_user_id>`.
   - Frontend callback URL is registered as each watch's `callback_url`.
 - **Transport:** `httpx` async client with timeouts and structured error handling.
+- **Request Contract:** Use backend field names exactly as implemented (`hotel_code`, `checkin_date`, `checkout_date`, `num_people`, `smoking_type`, `room_type`, `user_id`, `callback_url`).
 
 ### C. Webhook Receiver
 - **Framework:** FastAPI (lightweight receiver app within frontend service).
@@ -66,8 +67,8 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 ### E. Webhook API (`src/toyoko_inn_alert/discord_frontend/webhook_api.py`)
 - Provides FastAPI app and `POST /notify`.
 - Supports HMAC verification via `X-Toyoko-Signature`.
-  - **Compatibility Mode:** Until backend emits this header, verification stays disabled by default.
-  - **Production Mode:** Once backend support is shipped, verification is required in production.
+  - **Compatibility Mode:** Backend emits this header only when `WEBHOOK_SIGNATURE_SECRET` is configured.
+  - **Production Mode:** Require verification in production once both systems share the secret.
 - Converts payload into **Discord Rich Embeds** with action buttons.
 
 ## 3. Slash Command Contract (Frontend UX)
@@ -94,7 +95,6 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
   - Call backend `GET /watches/{user_id}`.
   - Render active watches in a **Rich Embed**.
   - **Interactive Removal:** Attach "Remove" buttons for each watch.
-  - Default UX assumes up to 10 active watches (backend policy). If more than 10 exist, frontend paginates.
 - **Response:** Interactive list or empty state message.
 
 ### C. `/watch remove`
@@ -103,24 +103,27 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 - **Response:** Confirmation or not-found message.
 
 ### D. `/toyoko status`
-- **Behavior:** Calls backend `GET /status` and reports local bot/shard health.
+- **Behavior:** Calls backend `GET /status`.
 
 ## 4. Webhook Contract and Delivery Semantics
 
 ### A. Inbound Payload (From Backend)
 - Expected payload aligns with backend contract in `docs/API_CONTRACT.md`.
+- Event types currently emitted by backend are `AVAILABILITY_FOUND` and `INSTANT_HIT`.
 
 ### B. Alert Delivery (Discord UX)
-- **Rich Embed:** Includes Hotel Name/Code, Price, Dates, and Booking URL.
-- **Room Details:** Included only when available in webhook payload; otherwise omitted.
+- **Rich Embed:** Includes Hotel Code, Price, Dates, and Booking URL.
+- **Room Details:** Include `stay.people`, `stay.smoking`, and `stay.roomType` when present.
 - **Action Button:** A "Book Now" button linking directly to the Toyoko Inn reservation page (`bookingUrl`).
 - **DM Reliability:** If DMs are blocked, the webhook receiver logs a "Permanent Failure" (2xx) to stop backend retries, and optionally warns the user if they interact with the bot later.
 
 ### C. Backend Error Mapping (Frontend Requirements)
 - Backend should return machine-readable error codes so slash commands can show clear messages.
 - Required mapping:
+  - `INVALID_API_KEY` -> show configuration/authentication error and avoid retry spam.
   - `MAX_ACTIVE_WATCHES` -> show max-watch guidance message.
   - `DUPLICATE_WATCH` -> tell user the same watch already exists.
+  - `WATCH_NOT_FOUND` -> tell user that watch ID no longer exists.
   - Unknown errors -> generic retry-later message.
 
 ## 5. Security and Operational Safeguards
@@ -185,8 +188,8 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 ### [2026-03-05] - UX and Reliability Enhancements
 - **Hotel Discovery:** Added requirement for **Slash Command Autocomplete** in `/watch add` to eliminate manual hotel code entry.
 - **Flexible Dates:** Added support for **natural language date parsing** (e.g., "tomorrow", "next Friday") for check-in/check-out inputs.
-- **Interactive Management:** Updated `/watch list` to use **Discord Buttons** for one-click watch removal, with pagination fallback when watch count exceeds backend policy.
+- **Interactive Management:** Updated `/watch list` to use **Discord Buttons** for one-click watch removal.
 - **Rich Notifications:** Specified the use of **Rich Embeds** and **Action Buttons** ("Book Now") for alert delivery.
 - **Delivery Reliability:** Added explicit mapping for DM-blocked users to ensure backend retries are handled correctly (2xx for permanent failure).
 - **Backend Error UX:** Added explicit frontend handling for backend code `MAX_ACTIVE_WATCHES` with user-facing guidance.
-- **Signature Rollout:** Clarified compatibility mode before `X-Toyoko-Signature` is available from backend.
+- **Signature Rollout:** Clarified compatibility mode where `X-Toyoko-Signature` is present only when backend signing is configured.

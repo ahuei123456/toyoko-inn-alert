@@ -51,15 +51,29 @@ templates = Jinja2Templates(
 logger = logging.getLogger("toyoko.api")
 
 
+def error_detail(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
+
+
 def verify_api_key(
-    x_api_key: Annotated[str, Header()],
     session: Annotated[Session, Depends(get_session)],
+    x_api_key: Annotated[str | None, Header()] = None,
 ):
+    if not x_api_key:
+        logger.warning("api_key_auth_missing")
+        raise HTTPException(
+            status_code=401,
+            detail=error_detail("INVALID_API_KEY", "Missing or invalid API key"),
+        )
+
     statement = select(APIKey).where(APIKey.key == x_api_key, APIKey.is_active)
     db_key = session.exec(statement).first()
     if not db_key:
         logger.warning("api_key_auth_failed")
-        raise HTTPException(status_code=401, detail="Invalid or revoked API Key")
+        raise HTTPException(
+            status_code=401,
+            detail=error_detail("INVALID_API_KEY", "Missing or invalid API key"),
+        )
     return db_key
 
 
@@ -189,7 +203,7 @@ async def create_watch(
         )
         raise HTTPException(
             status_code=400,
-            detail={"code": "INVALID_HOTEL_CODE", "message": "Invalid hotel code"},
+            detail=error_detail("INVALID_HOTEL_CODE", "Invalid hotel code"),
         )
 
     if watch.checkin_date >= watch.checkout_date:
@@ -201,10 +215,9 @@ async def create_watch(
         )
         raise HTTPException(
             status_code=400,
-            detail={
-                "code": "INVALID_DATE_RANGE",
-                "message": "Check-in must be before check-out",
-            },
+            detail=error_detail(
+                "INVALID_DATE_RANGE", "Check-in must be before check-out"
+            ),
         )
 
     async with _user_locks[watch.user_id]:
@@ -223,10 +236,10 @@ async def create_watch(
             )
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "code": "MAX_ACTIVE_WATCHES",
-                    "message": "You can only have up to 10 active watches.",
-                },
+                detail=error_detail(
+                    "MAX_ACTIVE_WATCHES",
+                    "You can only have up to 10 active watches.",
+                ),
             )
 
         # 3. Deduplication check
@@ -247,10 +260,10 @@ async def create_watch(
             )
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "code": "DUPLICATE_WATCH",
-                    "message": "Watch already exists for this user and date",
-                },
+                detail=error_detail(
+                    "DUPLICATE_WATCH",
+                    "Watch already exists for this user and date",
+                ),
             )
 
         # 4. Instant Hit Check
@@ -353,7 +366,10 @@ def delete_watch(
     watch = session.get(Watch, watch_id)
     if not watch:
         logger.warning("watch_delete_not_found watch_id=%d", watch_id)
-        raise HTTPException(status_code=404, detail="Watch not found")
+        raise HTTPException(
+            status_code=404,
+            detail=error_detail("WATCH_NOT_FOUND", "Watch not found"),
+        )
     logger.info(
         "watch_delete_requested watch_id=%d user_id=%s hotel_code=%s",
         watch.id,

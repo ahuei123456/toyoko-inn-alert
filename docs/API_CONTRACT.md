@@ -1,105 +1,109 @@
-# Toyoko Inn Alert System - API Contract v1.1
+# Toyoko Inn Alert System - API Contract v1.2
 
-This document defines the formal interface between the Toyoko Inn Alert Backend and any consuming frontends (Discord Bots, Web Dashboards, etc.).
+This document defines the current backend interface as implemented in this repository.
 
 ## 1. Authentication
-All requests to the Backend API must include an API Key.
+All backend API requests require an API key header.
 - **Header:** `X-API-Key: <your_secret_key>`
 
 ## 2. Inbound API (REST)
 
 ### POST /watches
-Add a new hotel to the monitor list.
+Create a watch.
 
-#### Validation Rules
-- **Hotel Existence:** `hotelCode` must be a valid 5-digit Toyoko Inn code (as found in `hotels.json`).
-- **Timeline:**
-  - `checkinDate` MUST NOT be in the past (JST).
-  - `checkinDate` MUST be at least 1 day before `checkoutDate`.
-  - Max stay duration: 14 days.
-  - Max lead time: 12 months in the future.
-  - **Deduplication:**
- Multiple identical watches (Hotel + Dates + People + Smoking) for the same `userId` are rejected.
-- **Limits:** Max 10 active watches per `userId`.
-- **Safety:** `callbackUrl` must be a valid HTTPS URL (no internal IPs).
-- **Data Types:**
-  - `numberOfPeople`: 1-4.
-  - `smokingType`: `smoking` | `noSmoking`.
-  - `roomType`: `10` (Single), `20` (Double), `30` (Twin), `40` (Triple+).
-    - *Note: This field is currently a placeholder and does not affect search results.*
-
-- **Body (JSON):**
+#### Request Body (JSON)
 ```json
 {
-  "hotelCode": "00088",
-  "checkinDate": "2026-03-04",
-  "checkoutDate": "2026-03-05",
-  "numberOfPeople": 1,
-  "smokingType": "noSmoking",
-  "roomType": 10,
-  "userId": "unique_user_id",
-  "callbackUrl": "https://your-service.com/api/callback"
+  "hotel_code": "00088",
+  "checkin_date": "2026-03-14T00:00:00+00:00",
+  "checkout_date": "2026-03-15T00:00:00+00:00",
+  "num_people": 1,
+  "smoking_type": "noSmoking",
+  "room_type": 10,
+  "user_id": "discord_12345",
+  "callback_url": "https://your-service.com/notify"
 }
 ```
 
-#### Rejection Semantics (Required)
-- Duplicate watch for same `userId` and parameters:
-  - **HTTP:** `409 Conflict`
-  - **Code:** `DUPLICATE_WATCH`
-- Max active watches reached for `userId`:
-  - **HTTP:** `409 Conflict`
+#### Implemented Validation and Business Rules
+- `hotel_code` must exist in `data/hotels.json`.
+- `checkin_date` must be earlier than `checkout_date`.
+- Maximum active watches per `user_id` is `10`.
+- Duplicate rejection is based on (`hotel_code`, `checkin_date`, `checkout_date`, `user_id`).
+- `num_people`, `smoking_type`, and `room_type` are accepted and stored; no strict value-range validation is currently enforced in the API layer.
+- `callback_url` is stored and used for webhooks; HTTPS/internal-network validation is not currently enforced in the API layer.
+
+#### Rejection Semantics
+- Missing or invalid API key:
+  - **HTTP:** `401`
+  - **Code:** `INVALID_API_KEY`
+- Invalid hotel code:
+  - **HTTP:** `400`
+  - **Code:** `INVALID_HOTEL_CODE`
+- Invalid date range:
+  - **HTTP:** `400`
+  - **Code:** `INVALID_DATE_RANGE`
+- Max active watches reached:
+  - **HTTP:** `409`
   - **Code:** `MAX_ACTIVE_WATCHES`
-  - **Message:** `"You can only have up to 10 active watches."`
+- Duplicate watch:
+  - **HTTP:** `409`
+  - **Code:** `DUPLICATE_WATCH`
 
 ### GET /watches/{user_id}
-List all active monitors for a user.
+Return all watches for a user.
 
 ### DELETE /watches/{watch_id}
-Stop monitoring a specific watch.
+Delete a watch by ID.
+- **Not Found:**
+  - **HTTP:** `404`
+  - **Code:** `WATCH_NOT_FOUND`
 
----
+### GET /status
+Health endpoint.
 
-## 3. Outbound Webhooks (The "Alert")
-When the backend detects availability, it will POST to the `callbackUrl` provided during registration.
+## 3. Outbound Webhooks
+When availability is detected (or an instant hit occurs), the backend POSTs to each watch's `callback_url`.
 
 ### Webhook Verification
-The backend signs the payload so you can verify it came from us.
 - **Header:** `X-Toyoko-Signature: <hmac_sha256_hash>`
 - **Algorithm:** HMAC-SHA256 over raw JSON body bytes.
-- **Secret:** Shared secret configured on backend (for example `WEBHOOK_SIGNATURE_SECRET`) and frontend verifier.
-- **Rollout Note (Current):** Signature verification is currently optional during rollout. Frontends should support verification, but must handle missing signature headers until strict mode is enabled.
+- **Behavior:** Header is included only when `WEBHOOK_SIGNATURE_SECRET` is configured.
 
 ### Webhook Payload (JSON)
 ```json
 {
   "event": "AVAILABILITY_FOUND",
-  "timestamp": "2026-03-04T12:00:00Z",
-  "userId": "unique_user_id",
+  "timestamp": "2026-03-04T12:00:00+00:00",
+  "userId": "discord_12345",
   "hotel": {
     "code": "00088",
-    "name": "Toyoko INN Kitami Ekimae",
     "price": 6498
   },
   "stay": {
-    "checkin": "2026-03-04",
-    "checkout": "2026-03-05",
+    "checkin": "2026-03-14T00:00:00+00:00",
+    "checkout": "2026-03-15T00:00:00+00:00",
     "people": 1,
     "smoking": "noSmoking",
     "roomType": 10
   },
-  "bookingUrl": "https://www.toyoko-inn.com/search/result/room_plan/?hotel=00088&start=2026-03-04&end=2026-03-05&room=1&people=1&smoking=noSmoking&roomType=10"
+  "bookingUrl": "https://www.toyoko-inn.com/search/result/room_plan/?hotel=00088&start=2026-03-14&end=2026-03-15&room=1&people=1&smoking=noSmoking&roomType=10"
 }
 ```
 
+Notes:
+- `event` may be `AVAILABILITY_FOUND` or `INSTANT_HIT`.
+- Webhook payload keys currently include `userId` and `roomType` (camelCase) because they are produced by existing backend code.
+
+### Delivery/Retry Semantics
+- Any `2xx` response is treated as delivered.
+- Non-`2xx` responses or network errors are retried with exponential backoff.
+- Notifications are marked failed after `10` retry attempts.
+
 ## 4. Error Handling
-- **401 Unauthorized:** Missing or invalid `X-API-Key`.
-- **409 Conflict:** Business-rule rejection (for example `DUPLICATE_WATCH`, `MAX_ACTIVE_WATCHES`).
-- **422 Unprocessable Entity:** Invalid date format or missing fields.
-- **429 Too Many Requests:** Frontend is exceeding the API rate limit.
 
-### Error Response Shape (Machine-Readable)
-Frontend clients should parse a stable error code for user-facing messaging.
-
+### Machine-Readable Error Shape
+For business-rule and validation rejections generated by `create_watch`:
 ```json
 {
   "detail": {
@@ -109,12 +113,16 @@ Frontend clients should parse a stable error code for user-facing messaging.
 }
 ```
 
-#### Known Error Codes
-- `MAX_ACTIVE_WATCHES`: User already has 10 active watches.
-- `DUPLICATE_WATCH`: Same watch already exists for this user.
-- `INVALID_HOTEL_CODE`: Unknown hotel code.
-- `INVALID_DATE_RANGE`: `checkinDate` is not before `checkoutDate`.
+### Known Error Codes
+- `INVALID_API_KEY`
+- `MAX_ACTIVE_WATCHES`
+- `DUPLICATE_WATCH`
+- `INVALID_HOTEL_CODE`
+- `INVALID_DATE_RANGE`
+- `WATCH_NOT_FOUND`
 
-### Required Follow-up Tasks
-- Align implementation and contract for date-range error code (`INVALID_DATE_RANGE` vs `INVALID_DATES`).
-- Make max-watch enforcement concurrency-safe so parallel requests cannot exceed 10 active watches.
+### Other Current Error Responses
+- `422` may be returned by FastAPI/Pydantic request validation errors.
+
+## 5. Concurrency Note
+Max-watch enforcement currently uses an in-process per-user asyncio lock. This prevents races in a single process but is not a distributed lock across multiple API processes.
