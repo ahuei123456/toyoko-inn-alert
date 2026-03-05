@@ -1,4 +1,4 @@
-# Toyoko Inn Alert System - API Contract v1.2
+# Toyoko Inn Alert System - API Contract v1.3
 
 This document defines the current backend interface as implemented in this repository.
 
@@ -68,14 +68,15 @@ When availability is detected (or an instant hit occurs), the backend POSTs to e
 ### Webhook Verification
 - **Header:** `X-Toyoko-Signature: <hmac_sha256_hash>`
 - **Algorithm:** HMAC-SHA256 over raw JSON body bytes.
-- **Behavior:** Header is included only when `WEBHOOK_SIGNATURE_SECRET` is configured.
+- **Behavior:** Header is always present.
+- **Startup Requirement:** Service startup fails if `WEBHOOK_SIGNATURE_SECRET` is missing.
 
 ### Webhook Payload (JSON)
 ```json
 {
   "event": "AVAILABILITY_FOUND",
   "timestamp": "2026-03-04T12:00:00+00:00",
-  "userId": "discord_12345",
+  "user_id": "discord_12345",
   "hotel": {
     "code": "00088",
     "price": 6498
@@ -85,15 +86,15 @@ When availability is detected (or an instant hit occurs), the backend POSTs to e
     "checkout": "2026-03-15T00:00:00+00:00",
     "people": 1,
     "smoking": "noSmoking",
-    "roomType": 10
+    "room_type": 10
   },
-  "bookingUrl": "https://www.toyoko-inn.com/search/result/room_plan/?hotel=00088&start=2026-03-14&end=2026-03-15&room=1&people=1&smoking=noSmoking&roomType=10"
+  "booking_url": "https://www.toyoko-inn.com/search/result/room_plan/?hotel=00088&start=2026-03-14&end=2026-03-15&room=1&people=1&smoking=noSmoking&roomType=10"
 }
 ```
 
 Notes:
 - `event` may be `AVAILABILITY_FOUND` or `INSTANT_HIT`.
-- Webhook payload keys currently include `userId` and `roomType` (camelCase) because they are produced by existing backend code.
+- Webhook payload keys are snake_case (`user_id`, `stay.room_type`, `booking_url`).
 
 ### Delivery/Retry Semantics
 - Any `2xx` response is treated as delivered.

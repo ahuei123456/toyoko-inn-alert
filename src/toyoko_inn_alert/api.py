@@ -30,6 +30,7 @@ from toyoko_inn_alert.db import (
 )
 from toyoko_inn_alert.notifier import Notifier
 from toyoko_inn_alert.watcher import Watcher
+from toyoko_inn_alert.webhook_payload import build_webhook_payload
 
 # Load hotels once for validation
 HOTELS = load_hotels("data/hotels.json")
@@ -287,19 +288,11 @@ async def create_watch(
                 )
 
                 # 5. Immediate Notification Queue
-                payload = {
-                    "event": "INSTANT_HIT",
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "userId": watch.user_id,
-                    "hotel": {"code": watch.hotel_code, "price": status.lowestPrice},
-                    "stay": {
-                        "checkin": watch.checkin_date.isoformat(),
-                        "checkout": watch.checkout_date.isoformat(),
-                        "people": watch.num_people,
-                        "smoking": watch.smoking_type,
-                        "roomType": watch.room_type,
-                    },
-                }
+                payload = build_webhook_payload(
+                    event="INSTANT_HIT",
+                    watch=watch,
+                    price=status.lowestPrice,
+                )
                 # We need to save the watch first to get an ID
                 session.add(watch)
                 session.flush()  # Ensure watch.id is generated

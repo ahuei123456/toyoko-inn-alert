@@ -34,7 +34,9 @@ def api_key_fixture(session: Session):
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session):
+def client_fixture(session: Session, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_SIGNATURE_SECRET", "test-signing-secret")
+
     def get_session_override():
         return session
 
@@ -42,6 +44,20 @@ def client_fixture(session: Session):
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
+
+
+def _assert_error_contract(
+    response,
+    expected_status: int,
+    expected_code: str,
+    expected_message: str | None = None,
+):
+    assert response.status_code == expected_status
+    detail = response.json()["detail"]
+    assert set(detail.keys()) == {"code", "message"}
+    assert detail["code"] == expected_code
+    if expected_message is not None:
+        assert detail["message"] == expected_message
 
 
 def test_create_watch_success(client: TestClient, api_key: str):
@@ -95,20 +111,53 @@ def test_create_watch_invalid_hotel(client: TestClient, api_key: str):
         },
         headers={"X-API-Key": api_key},
     )
-    assert response.status_code == 400
-    assert response.json()["detail"]["code"] == "INVALID_HOTEL_CODE"
+    _assert_error_contract(
+        response,
+        400,
+        "INVALID_HOTEL_CODE",
+        "Invalid hotel code",
+    )
+
+
+def test_create_watch_invalid_date_range_contract(client: TestClient, api_key: str):
+    now = datetime.now()
+    response = client.post(
+        "/watches",
+        json={
+            "hotel_code": "00088",
+            "checkin_date": (now + timedelta(days=2)).isoformat(),
+            "checkout_date": (now + timedelta(days=1)).isoformat(),
+            "user_id": "user123",
+            "callback_url": "https://example.com/callback",
+        },
+        headers={"X-API-Key": api_key},
+    )
+    _assert_error_contract(
+        response,
+        400,
+        "INVALID_DATE_RANGE",
+        "Check-in must be before check-out",
+    )
 
 
 def test_missing_api_key_returns_machine_readable_error(client: TestClient):
     response = client.get("/watches/user123")
-    assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "INVALID_API_KEY"
+    _assert_error_contract(
+        response,
+        401,
+        "INVALID_API_KEY",
+        "Missing or invalid API key",
+    )
 
 
 def test_invalid_api_key_returns_machine_readable_error(client: TestClient):
     response = client.get("/watches/user123", headers={"X-API-Key": "bad_key"})
-    assert response.status_code == 401
-    assert response.json()["detail"]["code"] == "INVALID_API_KEY"
+    _assert_error_contract(
+        response,
+        401,
+        "INVALID_API_KEY",
+        "Missing or invalid API key",
+    )
 
 
 def test_create_watch_max_active_watches(
@@ -137,8 +186,12 @@ def test_create_watch_max_active_watches(
         },
         headers={"X-API-Key": api_key},
     )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "MAX_ACTIVE_WATCHES"
+    _assert_error_contract(
+        response,
+        409,
+        "MAX_ACTIVE_WATCHES",
+        "You can only have up to 10 active watches.",
+    )
 
 
 def test_create_watch_duplicate(client: TestClient, session: Session, api_key: str):
@@ -167,8 +220,12 @@ def test_create_watch_duplicate(client: TestClient, session: Session, api_key: s
         },
         headers={"X-API-Key": api_key},
     )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "DUPLICATE_WATCH"
+    _assert_error_contract(
+        response,
+        409,
+        "DUPLICATE_WATCH",
+        "Watch already exists for this user and date",
+    )
 
 
 def test_list_watches(client: TestClient, session: Session, api_key: str):
@@ -193,8 +250,12 @@ def test_delete_watch_not_found_returns_machine_readable_error(
     client: TestClient, api_key: str
 ):
     response = client.delete("/watches/999999", headers={"X-API-Key": api_key})
-    assert response.status_code == 404
-    assert response.json()["detail"]["code"] == "WATCH_NOT_FOUND"
+    _assert_error_contract(
+        response,
+        404,
+        "WATCH_NOT_FOUND",
+        "Watch not found",
+    )
 
 
 def _admin_headers() -> dict[str, str]:

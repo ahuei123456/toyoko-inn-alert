@@ -109,7 +109,7 @@ The frontend MUST implement an endpoint that accepts this POST body:
   {
     "event": "AVAILABILITY_FOUND",
     "timestamp": "2026-03-04T12:00:00+00:00",
-    "userId": "discord_12345",
+    "user_id": "discord_12345",
     "hotel": {
       "code": "00088",
       "price": 6498
@@ -119,17 +119,16 @@ The frontend MUST implement an endpoint that accepts this POST body:
       "checkout": "2026-03-15T00:00:00+00:00",
       "people": 1,
       "smoking": "noSmoking",
-      "roomType": 10
+      "room_type": 10
     },
-    "bookingUrl": "https://www.toyoko-inn.com/search/result/room_plan/..."
+    "booking_url": "https://www.toyoko-inn.com/search/result/room_plan/..."
   }
   ```
   - *Note:* `event` may be `AVAILABILITY_FOUND` or `INSTANT_HIT`.
 
 ### C. Security
 - **Webhook Verification:** Outbound payloads include `X-Toyoko-Signature` (HMAC-SHA256) for the frontend to verify authenticity.
-- **Signing Secret:** Backend must use configured secret key (e.g. `WEBHOOK_SIGNATURE_SECRET`) and should fail fast on startup if signature mode is required but secret is missing.
-- **Rollout Status:** Signature behavior is currently optional; this is a temporary compatibility mode and should be monitored closely until strict mode is enforced.
+- **Signing Secret:** Backend must use configured secret key (e.g. `WEBHOOK_SIGNATURE_SECRET`) and fails fast on startup when missing.
 
 ### D. Error Contract (Required for Frontend UX)
 - Authentication failure (missing/invalid `X-API-Key`):
@@ -212,10 +211,10 @@ The frontend MUST implement an endpoint that accepts this POST body:
 ### Priority 2 (Strongly Recommended)
 - [x] Return machine-readable error code `DUPLICATE_WATCH` for duplicate creation attempts.
 - [x] Keep stable error payload shape for public API endpoints used by frontend mapping (`detail.code`, `detail.message`).
-- [x] Expand webhook `stay` payload with `people`, `smoking`, `roomType`.
-- [ ] Standardize outbound webhook field naming (currently mixed `userId`/`roomType`) with a backward-compatible migration plan to avoid breaking existing consumers.
+- [x] Expand webhook `stay` payload with `people`, `smoking`, `room_type`.
+- [x] Standardize outbound webhook field naming (`user_id`/`room_type`/`booking_url`).
 
 ### Priority 3 (Operational)
-- [ ] Document signature rollout and secret rotation in deployment docs.
-- [ ] Add regression tests for the error contract and signature behavior.
-- [ ] Plan and execute migration from optional signature mode to strict signature enforcement.
+- [x] Document signature rollout and secret rotation in deployment docs.
+- [x] Add regression tests for the error contract and signature behavior.
+- [x] Plan and execute migration from optional signature mode to strict signature enforcement.

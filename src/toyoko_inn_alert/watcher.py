@@ -1,11 +1,11 @@
 import json
 import logging
-from datetime import UTC, datetime
 
 from sqlmodel import Session, select
 
 from toyoko_inn_alert.client import ToyokoClient
 from toyoko_inn_alert.db import Notification, Watch, engine
+from toyoko_inn_alert.webhook_payload import build_webhook_payload
 
 logger = logging.getLogger("toyoko.watcher")
 
@@ -99,19 +99,11 @@ class Watcher:
         )
 
     def _create_notification(self, session: Session, watch: Watch, price: int):
-        payload = {
-            "event": "AVAILABILITY_FOUND",
-            "timestamp": datetime.now(UTC).isoformat(),
-            "userId": watch.user_id,
-            "hotel": {"code": watch.hotel_code, "price": price},
-            "stay": {
-                "checkin": watch.checkin_date.isoformat(),
-                "checkout": watch.checkout_date.isoformat(),
-                "people": watch.num_people,
-                "smoking": watch.smoking_type,
-                "roomType": watch.room_type,
-            },
-        }
+        payload = build_webhook_payload(
+            event="AVAILABILITY_FOUND",
+            watch=watch,
+            price=price,
+        )
         notification = Notification(watch_id=watch.id, payload=json.dumps(payload))
         session.add(notification)
         logger.info(

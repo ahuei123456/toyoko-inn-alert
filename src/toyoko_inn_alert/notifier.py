@@ -12,6 +12,7 @@ import httpx
 from sqlmodel import Session, select
 
 from toyoko_inn_alert.db import Notification, Watch, engine
+from toyoko_inn_alert.webhook_payload import add_booking_url_fields
 
 logger = logging.getLogger("toyoko.notifier")
 
@@ -19,7 +20,10 @@ logger = logging.getLogger("toyoko.notifier")
 class Notifier:
     def __init__(self, timeout: float = 10.0):
         self.timeout = timeout
-        self.secret = os.getenv("WEBHOOK_SIGNATURE_SECRET")
+        secret = os.getenv("WEBHOOK_SIGNATURE_SECRET")
+        if not secret:
+            raise RuntimeError("WEBHOOK_SIGNATURE_SECRET is required.")
+        self.secret: str = secret
 
     async def process_queue(self):
         """
@@ -85,22 +89,17 @@ class Notifier:
         # 3. Attempt POST
         try:
             payload = json.loads(notification.payload)
-            # Add booking URL helper
-            payload["bookingUrl"] = self._generate_booking_url(watch)
+            payload = add_booking_url_fields(payload, self._generate_booking_url(watch))
 
-            headers = {}
-            if self.secret:
-                raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-                signature = hmac.new(
-                    self.secret.encode("utf-8"), raw_payload, hashlib.sha256
-                ).hexdigest()
-                headers["X-Toyoko-Signature"] = signature
-                headers["Content-Type"] = "application/json"
-                response = await client.post(
-                    watch.callback_url, content=raw_payload, headers=headers
-                )
-            else:
-                response = await client.post(watch.callback_url, json=payload)
+            headers = {"Content-Type": "application/json"}
+            raw_payload = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+            signature = hmac.new(
+                self.secret.encode("utf-8"), raw_payload, hashlib.sha256
+            ).hexdigest()
+            headers["X-Toyoko-Signature"] = signature
+            response = await client.post(
+                watch.callback_url, content=raw_payload, headers=headers
+            )
 
             response.raise_for_status()
 

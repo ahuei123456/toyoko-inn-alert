@@ -131,12 +131,11 @@ If schema changes are introduced in future updates, add and run migrations befor
 
 ### Webhook Signatures
 
-To ensure that the outbound webhook notifications are genuinely from the Toyoko Inn Alert system, configure `WEBHOOK_SIGNATURE_SECRET`. The system computes an HMAC-SHA256 hash of the raw JSON payload and sends it in the `X-Toyoko-Signature` header.
+To ensure that outbound webhook notifications are authentic, configure `WEBHOOK_SIGNATURE_SECRET`. The system computes an HMAC-SHA256 hash of the raw JSON payload and sends it in the `X-Toyoko-Signature` header.
 
-Current rollout status:
-- Signature support is optional right now.
-- Frontend consumers should tolerate missing signature headers temporarily.
-- Treat missing signatures as a security watch-out and plan to enforce strict verification in production.
+Current behavior (as of 2026-03-05):
+- Signature header is always present on outbound webhooks.
+- Service startup fails if `WEBHOOK_SIGNATURE_SECRET` is missing.
 
 **Verification Example (Python):**
 ```python
@@ -150,11 +149,16 @@ def verify_signature(secret: str, raw_payload: bytes, signature_header: str) -> 
     return hmac.compare_digest(expected_signature, signature_header)
 ```
 
-**Secret Rotation:**
-To rotate the webhook signature secret:
-1. Update the `WEBHOOK_SIGNATURE_SECRET` environment variable in your deployment environment or `.env` file.
-2. Restart the deployment (e.g., `docker compose down` and `docker compose up -d`).
-3. Update your frontend/discord bot consumer to expect the new secret.
+**Secret Rotation Procedure:**
+1. Generate a new strong secret and store it in your secret manager.
+2. Update consumers to accept both old and new secrets during a short overlap window.
+3. Update `WEBHOOK_SIGNATURE_SECRET` in deployment and restart service instances.
+4. Confirm incoming webhook verification succeeds with the new secret.
+5. Remove old secret support from consumers after all senders are confirmed rotated.
+
+**Webhook Field Naming:**
+1. Payload keys are snake_case: `user_id`, `stay.room_type`, and `booking_url`.
+2. No legacy camelCase aliases are emitted.
 
 ## 9. Viewing Logs
 

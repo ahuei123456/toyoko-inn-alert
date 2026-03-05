@@ -1,7 +1,7 @@
 import hashlib
 import hmac
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -25,15 +25,9 @@ def session_fixture():
         yield session
 
 
-@pytest.mark.asyncio
-async def test_notifier_webhook_signature(session: Session, monkeypatch):
-    secret = "super-secret-key"
-    monkeypatch.setenv("WEBHOOK_SIGNATURE_SECRET", secret)
-
-    notifier = Notifier()
-
+def _seed_watch(session: Session) -> Watch:
     checkin = datetime.now(UTC)
-    checkout = datetime.now(UTC)
+    checkout = checkin + timedelta(days=1)
     watch = Watch(
         hotel_code="00088",
         checkin_date=checkin,
@@ -43,18 +37,28 @@ async def test_notifier_webhook_signature(session: Session, monkeypatch):
     )
     session.add(watch)
     session.commit()
+    session.refresh(watch)
+    return watch
 
+
+@pytest.mark.asyncio
+async def test_notifier_webhook_signature(session: Session, monkeypatch):
+    secret = "super-secret-key"
+    monkeypatch.setenv("WEBHOOK_SIGNATURE_SECRET", secret)
+
+    notifier = Notifier()
+    watch = _seed_watch(session)
     payload_dict = {
         "event": "AVAILABILITY_FOUND",
         "timestamp": datetime.now(UTC).isoformat(),
-        "userId": "user123",
-        "hotel": {"code": "00088", "price": 5000},
+        "user_id": watch.user_id,
+        "hotel": {"code": watch.hotel_code, "price": 5000},
         "stay": {
-            "checkin": checkin.isoformat(),
-            "checkout": checkout.isoformat(),
+            "checkin": watch.checkin_date.isoformat(),
+            "checkout": watch.checkout_date.isoformat(),
             "people": 1,
             "smoking": "noSmoking",
-            "roomType": 10,
+            "room_type": 10,
         },
     }
 
@@ -70,21 +74,24 @@ async def test_notifier_webhook_signature(session: Session, monkeypatch):
         async with httpx.AsyncClient() as client:
             result = await notifier._deliver(session, notification, client)
 
-        assert result == "sent"
-        assert route.called
+    assert result == "sent"
+    assert route.called
 
-        request = route.calls.last.request
-        signature = request.headers.get("X-Toyoko-Signature")
+    request = route.calls.last.request
+    payload = json.loads(request.content.decode("utf-8"))
+    assert payload["user_id"] == watch.user_id
+    assert payload["stay"]["room_type"] == watch.room_type
+    assert payload["booking_url"] == notifier._generate_booking_url(watch)
 
-        # Verify the signature
-        payload_with_url = payload_dict.copy()
-        payload_with_url["bookingUrl"] = notifier._generate_booking_url(watch)
-        raw_payload = json.dumps(payload_with_url, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        expected_signature = hmac.new(
-            secret.encode("utf-8"), raw_payload, hashlib.sha256
-        ).hexdigest()
+    signature = request.headers.get("X-Toyoko-Signature")
+    expected_signature = hmac.new(
+        secret.encode("utf-8"), request.content, hashlib.sha256
+    ).hexdigest()
+    assert signature == expected_signature
 
-        assert signature == expected_signature
-        assert request.content == raw_payload
+
+def test_notifier_requires_secret(monkeypatch):
+    monkeypatch.delenv("WEBHOOK_SIGNATURE_SECRET", raising=False)
+
+    with pytest.raises(RuntimeError, match="WEBHOOK_SIGNATURE_SECRET is required"):
+        Notifier()

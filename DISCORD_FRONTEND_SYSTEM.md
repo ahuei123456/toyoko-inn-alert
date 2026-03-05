@@ -35,7 +35,7 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 - **Purpose:** Accept backend events and route alerts to Discord users.
 - **Delivery Behavior:**
   - Parse event payload.
-  - Resolve target Discord user from `userId`.
+  - Resolve target Discord user from `user_id`.
   - Send DM with Rich Embed and "Book Now" button.
   - Return HTTP status to control backend retry semantics (2xx for success/permanent failure, 5xx for retry).
 
@@ -67,8 +67,7 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 ### E. Webhook API (`src/toyoko_inn_alert/discord_frontend/webhook_api.py`)
 - Provides FastAPI app and `POST /notify`.
 - Supports HMAC verification via `X-Toyoko-Signature`.
-  - **Compatibility Mode:** Backend emits this header only when `WEBHOOK_SIGNATURE_SECRET` is configured.
-  - **Production Mode:** Require verification in production once both systems share the secret.
+  - Signature header is always present and should be verified.
 - Converts payload into **Discord Rich Embeds** with action buttons.
 
 ## 3. Slash Command Contract (Frontend UX)
@@ -113,8 +112,8 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 
 ### B. Alert Delivery (Discord UX)
 - **Rich Embed:** Includes Hotel Code, Price, Dates, and Booking URL.
-- **Room Details:** Include `stay.people`, `stay.smoking`, and `stay.roomType` when present.
-- **Action Button:** A "Book Now" button linking directly to the Toyoko Inn reservation page (`bookingUrl`).
+- **Room Details:** Include `stay.people`, `stay.smoking`, and `stay.room_type` when present.
+- **Action Button:** A "Book Now" button linking directly to the Toyoko Inn reservation page (`booking_url`).
 - **DM Reliability:** If DMs are blocked, the webhook receiver logs a "Permanent Failure" (2xx) to stop backend retries, and optionally warns the user if they interact with the bot later.
 
 ### C. Backend Error Mapping (Frontend Requirements)
@@ -192,4 +191,4 @@ This frontend is designed to follow the same bot structure pattern used in `ahue
 - **Rich Notifications:** Specified the use of **Rich Embeds** and **Action Buttons** ("Book Now") for alert delivery.
 - **Delivery Reliability:** Added explicit mapping for DM-blocked users to ensure backend retries are handled correctly (2xx for permanent failure).
 - **Backend Error UX:** Added explicit frontend handling for backend code `MAX_ACTIVE_WATCHES` with user-facing guidance.
-- **Signature Rollout:** Clarified compatibility mode where `X-Toyoko-Signature` is present only when backend signing is configured.
+- **Signature Rollout:** Clarified strict signature verification requirements.
