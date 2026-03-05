@@ -1,8 +1,10 @@
+import asyncio
 import json
 import logging
 import os
 import secrets
 import uuid
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +37,9 @@ HOTELS = load_hotels("data/hotels.json")
 # Polling intervals
 POLLING_INTERVAL_SECONDS = 3600
 QUEUE_INTERVAL_SECONDS = 60
+
+# Concurrency lock per user
+_user_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
@@ -197,129 +202,135 @@ async def create_watch(
         raise HTTPException(
             status_code=400,
             detail={
-                "code": "INVALID_DATES",
+                "code": "INVALID_DATE_RANGE",
                 "message": "Check-in must be before check-out",
             },
         )
 
-    # 2. Max Active Watches check
-    active_watches_count = session.exec(
-        select(func.count()).select_from(Watch).where(Watch.user_id == watch.user_id)
-    ).one()
+    async with _user_locks[watch.user_id]:
+        # 2. Max Active Watches check
+        active_watches_count = session.exec(
+            select(func.count())
+            .select_from(Watch)
+            .where(Watch.user_id == watch.user_id)
+        ).one()
 
-    if active_watches_count >= 10:
-        logger.warning(
-            "watch_create_rejected_max_watches user_id=%s count=%d",
-            watch.user_id,
-            active_watches_count,
-        )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "MAX_ACTIVE_WATCHES",
-                "message": "You can only have up to 10 active watches.",
-            },
-        )
-
-    # 3. Deduplication check
-    existing = session.exec(
-        select(Watch).where(
-            Watch.hotel_code == watch.hotel_code,
-            Watch.checkin_date == watch.checkin_date,
-            Watch.checkout_date == watch.checkout_date,
-            Watch.user_id == watch.user_id,
-        )
-    ).first()
-    if existing:
-        logger.info(
-            "watch_create_rejected_duplicate user_id=%s hotel_code=%s watch_id=%s",
-            watch.user_id,
-            watch.hotel_code,
-            existing.id,
-        )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "DUPLICATE_WATCH",
-                "message": "Watch already exists for this user and date",
-            },
-        )
-
-    # 3. Instant Hit Check
-    client = ToyokoClient()
-    try:
-        price_result = await client.fetch_prices(
-            [watch.hotel_code],
-            watch.checkin_date,
-            watch.checkout_date,
-            num_people=watch.num_people,
-            smoking_type=watch.smoking_type,
-        )
-        status = price_result.prices.get(watch.hotel_code)
-        if status and status.existEnoughVacantRooms:
-            watch.last_available = True
-            logger.info(
-                "watch_create_instant_hit user_id=%s hotel_code=%s price=%d",
+        if active_watches_count >= 10:
+            logger.warning(
+                "watch_create_rejected_max_watches user_id=%s count=%d",
                 watch.user_id,
-                watch.hotel_code,
-                status.lowestPrice,
+                active_watches_count,
             )
-
-            # 4. Immediate Notification Queue
-            payload = {
-                "event": "INSTANT_HIT",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "userId": watch.user_id,
-                "hotel": {"code": watch.hotel_code, "price": status.lowestPrice},
-                "stay": {
-                    "checkin": watch.checkin_date.isoformat(),
-                    "checkout": watch.checkout_date.isoformat(),
-                    "people": watch.num_people,
-                    "smoking": watch.smoking_type,
-                    "roomType": watch.room_type,
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "MAX_ACTIVE_WATCHES",
+                    "message": "You can only have up to 10 active watches.",
                 },
-            }
-            # We need to save the watch first to get an ID
-            session.add(watch)
-            session.flush()  # Ensure watch.id is generated
+            )
 
-            notification = Notification(watch_id=watch.id, payload=json.dumps(payload))
-            session.add(notification)
-            session.commit()
-            session.refresh(watch)
+        # 3. Deduplication check
+        existing = session.exec(
+            select(Watch).where(
+                Watch.hotel_code == watch.hotel_code,
+                Watch.checkin_date == watch.checkin_date,
+                Watch.checkout_date == watch.checkout_date,
+                Watch.user_id == watch.user_id,
+            )
+        ).first()
+        if existing:
             logger.info(
-                "watch_create_completed watch_id=%s user_id=%s hotel_code=%s "
-                "last_available=true",
-                watch.id,
+                "watch_create_rejected_duplicate user_id=%s hotel_code=%s watch_id=%s",
+                watch.user_id,
+                watch.hotel_code,
+                existing.id,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_WATCH",
+                    "message": "Watch already exists for this user and date",
+                },
+            )
+
+        # 4. Instant Hit Check
+        client = ToyokoClient()
+        try:
+            price_result = await client.fetch_prices(
+                [watch.hotel_code],
+                watch.checkin_date,
+                watch.checkout_date,
+                num_people=watch.num_people,
+                smoking_type=watch.smoking_type,
+            )
+            status = price_result.prices.get(watch.hotel_code)
+            if status and status.existEnoughVacantRooms:
+                watch.last_available = True
+                logger.info(
+                    "watch_create_instant_hit user_id=%s hotel_code=%s price=%d",
+                    watch.user_id,
+                    watch.hotel_code,
+                    status.lowestPrice,
+                )
+
+                # 5. Immediate Notification Queue
+                payload = {
+                    "event": "INSTANT_HIT",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "userId": watch.user_id,
+                    "hotel": {"code": watch.hotel_code, "price": status.lowestPrice},
+                    "stay": {
+                        "checkin": watch.checkin_date.isoformat(),
+                        "checkout": watch.checkout_date.isoformat(),
+                        "people": watch.num_people,
+                        "smoking": watch.smoking_type,
+                        "roomType": watch.room_type,
+                    },
+                }
+                # We need to save the watch first to get an ID
+                session.add(watch)
+                session.flush()  # Ensure watch.id is generated
+
+                notification = Notification(
+                    watch_id=watch.id, payload=json.dumps(payload)
+                )
+                session.add(notification)
+                session.commit()
+                session.refresh(watch)
+                logger.info(
+                    "watch_create_completed watch_id=%s user_id=%s hotel_code=%s "
+                    "last_available=true",
+                    watch.id,
+                    watch.user_id,
+                    watch.hotel_code,
+                )
+                return watch
+            logger.info(
+                "watch_create_instant_hit_not_found user_id=%s hotel_code=%s",
                 watch.user_id,
                 watch.hotel_code,
             )
-            return watch
-        logger.info(
-            "watch_create_instant_hit_not_found user_id=%s hotel_code=%s",
-            watch.user_id,
-            watch.hotel_code,
-        )
-    except Exception as e:
-        logger.exception(
-            "watch_create_instant_hit_failed user_id=%s hotel_code=%s error=%s",
-            watch.user_id,
-            watch.hotel_code,
-            e,
-        )
+        except Exception as e:
+            logger.exception(
+                "watch_create_instant_hit_failed user_id=%s hotel_code=%s error=%s",
+                watch.user_id,
+                watch.hotel_code,
+                e,
+            )
 
-    # Not an instant hit or check failed
-    session.add(watch)
-    session.commit()
-    session.refresh(watch)
-    logger.info(
-        "watch_create_completed watch_id=%s user_id=%s hotel_code=%s last_available=%s",
-        watch.id,
-        watch.user_id,
-        watch.hotel_code,
-        watch.last_available,
-    )
-    return watch
+        # Not an instant hit or check failed
+        session.add(watch)
+        session.commit()
+        session.refresh(watch)
+        logger.info(
+            "watch_create_completed watch_id=%s user_id=%s "
+            "hotel_code=%s last_available=%s",
+            watch.id,
+            watch.user_id,
+            watch.hotel_code,
+            watch.last_available,
+        )
+        return watch
 
 
 @app.get("/watches/{user_id}", response_model=list[Watch])

@@ -13,11 +13,11 @@ This guide covers production-style deployment for the current backend implementa
 
 - `ADMIN_USERNAME`: HTTP Basic username for `/admin`
 - `ADMIN_PASSWORD`: HTTP Basic password for `/admin`
-- `WEBHOOK_SIGNATURE_SECRET`: Secret key used to generate an HMAC-SHA256 signature for outgoing webhooks. Must be shared with clients to verify payloads.
 
 Optional:
 
 - `TOYOKO_API_KEY`: present in `docker-compose.yml` but not used by current code
+- `WEBHOOK_SIGNATURE_SECRET`: Secret key used to generate an HMAC-SHA256 signature for outgoing webhooks. Must be shared with clients to verify payloads.
 - `PYTHONUNBUFFERED=1`: recommended for container logging
 - `LOG_LEVEL`: logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`), default `INFO`
 
@@ -132,6 +132,11 @@ If schema changes are introduced in future updates, add and run migrations befor
 ### Webhook Signatures
 
 To ensure that the outbound webhook notifications are genuinely from the Toyoko Inn Alert system, configure `WEBHOOK_SIGNATURE_SECRET`. The system computes an HMAC-SHA256 hash of the raw JSON payload and sends it in the `X-Toyoko-Signature` header.
+
+Current rollout status:
+- Signature support is optional right now.
+- Frontend consumers should tolerate missing signature headers temporarily.
+- Treat missing signatures as a security watch-out and plan to enforce strict verification in production.
 
 **Verification Example (Python):**
 ```python

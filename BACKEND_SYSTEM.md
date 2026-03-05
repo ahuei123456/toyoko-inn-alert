@@ -127,6 +127,7 @@ The frontend MUST implement an endpoint that accepts this POST body:
 ### C. Security
 - **Webhook Verification:** Outbound payloads include `X-Toyoko-Signature` (HMAC-SHA256) for the frontend to verify authenticity.
 - **Signing Secret:** Backend must use configured secret key (e.g. `WEBHOOK_SIGNATURE_SECRET`) and should fail fast on startup if signature mode is required but secret is missing.
+- **Rollout Status:** Signature behavior is currently optional; this is a temporary compatibility mode and should be monitored closely until strict mode is enforced.
 
 ### D. Error Contract (Required for Frontend UX)
 - `POST /watches` duplicate watch:
@@ -196,6 +197,8 @@ The frontend MUST implement an endpoint that accepts this POST body:
 - [ ] Add configurable `WEBHOOK_SIGNATURE_SECRET` for signing.
 - [ ] Enforce max 10 active watches per `userId` in `POST /watches`.
 - [ ] Return machine-readable error code `MAX_ACTIVE_WATCHES` when limit is exceeded.
+- [ ] Make max-watch enforcement concurrency-safe (prevent race conditions under parallel `POST /watches` requests).
+- [ ] Fix date-range error code mismatch by standardizing on `INVALID_DATE_RANGE` in implementation and docs.
 
 ### Priority 2 (Strongly Recommended)
 - [ ] Return machine-readable error code `DUPLICATE_WATCH` for duplicate creation attempts.
@@ -205,3 +208,4 @@ The frontend MUST implement an endpoint that accepts this POST body:
 ### Priority 3 (Operational)
 - [ ] Document signature rollout and secret rotation in deployment docs.
 - [ ] Add regression tests for the error contract and signature behavior.
+- [ ] Plan and execute migration from optional signature mode to strict signature enforcement.

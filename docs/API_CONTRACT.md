@@ -67,6 +67,7 @@ The backend signs the payload so you can verify it came from us.
 - **Header:** `X-Toyoko-Signature: <hmac_sha256_hash>`
 - **Algorithm:** HMAC-SHA256 over raw JSON body bytes.
 - **Secret:** Shared secret configured on backend (for example `WEBHOOK_SIGNATURE_SECRET`) and frontend verifier.
+- **Rollout Note (Current):** Signature verification is currently optional during rollout. Frontends should support verification, but must handle missing signature headers until strict mode is enabled.
 
 ### Webhook Payload (JSON)
 ```json
@@ -113,3 +114,7 @@ Frontend clients should parse a stable error code for user-facing messaging.
 - `DUPLICATE_WATCH`: Same watch already exists for this user.
 - `INVALID_HOTEL_CODE`: Unknown hotel code.
 - `INVALID_DATE_RANGE`: `checkinDate` is not before `checkoutDate`.
+
+### Required Follow-up Tasks
+- Align implementation and contract for date-range error code (`INVALID_DATE_RANGE` vs `INVALID_DATES`).
+- Make max-watch enforcement concurrency-safe so parallel requests cannot exceed 10 active watches.
