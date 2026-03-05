@@ -18,6 +18,7 @@ Optional:
 
 - `TOYOKO_API_KEY`: present in `docker-compose.yml` but not used by current code
 - `PYTHONUNBUFFERED=1`: recommended for container logging
+- `LOG_LEVEL`: logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`), default `INFO`
 
 ## 3. Deploy with Docker Compose (Recommended)
 
@@ -126,3 +127,17 @@ If schema changes are introduced in future updates, add and run migrations befor
 - Put the API behind HTTPS (reverse proxy or managed ingress).
 - Restrict admin path exposure (`/admin`) with network controls if possible.
 - Rotate API keys periodically via admin panel or `scripts/manage_keys.py`.
+
+## 9. Viewing Logs
+
+For Docker Compose deployments:
+
+```powershell
+docker compose logs -f api
+```
+
+Recent logs:
+
+```powershell
+docker compose logs --since 24h api
+```

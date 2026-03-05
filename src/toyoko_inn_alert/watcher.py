@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from toyoko_inn_alert.client import ToyokoClient
 from toyoko_inn_alert.db import Notification, Watch, engine
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("toyoko.watcher")
 
 
 class Watcher:
@@ -18,14 +18,15 @@ class Watcher:
         """
         Executes one full polling cycle across all active watches.
         """
-        logger.info("Starting polling cycle...")
+        logger.info("watcher_cycle_start")
         with Session(engine) as session:
             # 1. Fetch all active watches
             statement = select(Watch)
             watches = session.exec(statement).all()
+            logger.info("watcher_active_watches count=%d", len(watches))
 
             if not watches:
-                logger.info("No active watches found.")
+                logger.info("watcher_cycle_no_active_watches")
                 return
 
             # 2. Group watches by criteria to batch API calls
@@ -40,14 +41,21 @@ class Watcher:
                 if key not in groups:
                     groups[key] = []
                 groups[key].append(w)
+            logger.info("watcher_group_count count=%d", len(groups))
+
+            processed_groups = 0
+            processed_batches = 0
+            hit_count = 0
 
             for key, group_watches in groups.items():
+                processed_groups += 1
                 checkin, checkout, people, smoking = key
 
                 # Toyoko API supports up to 10 hotels per batch
                 hotel_codes = list(set(w.hotel_code for w in group_watches))
                 # Chunks of 10
                 for i in range(0, len(hotel_codes), 10):
+                    processed_batches += 1
                     batch_codes = hotel_codes[i : i + 10]
                     try:
                         results = await self.client.fetch_prices(
@@ -62,8 +70,14 @@ class Watcher:
 
                                 # HIT: Was false, now true
                                 if not w.last_available and is_available:
+                                    hit_count += 1
                                     logger.info(
-                                        f"HIT! Hotel {w.hotel_code} is available."
+                                        "watcher_hit watch_id=%s user_id=%s "
+                                        "hotel_code=%s price=%d",
+                                        w.id,
+                                        w.user_id,
+                                        w.hotel_code,
+                                        status.lowestPrice,
                                     )
                                     self._create_notification(
                                         session, w, status.lowestPrice
@@ -73,9 +87,16 @@ class Watcher:
 
                         session.commit()
                     except Exception as e:
-                        logger.error(f"Error polling group {key}: {e}")
+                        logger.exception(
+                            "watcher_group_poll_failed key=%s error=%s", key, e
+                        )
 
-        logger.info("Polling cycle complete.")
+        logger.info(
+            "watcher_cycle_complete groups=%d batches=%d hits=%d",
+            processed_groups,
+            processed_batches,
+            hit_count,
+        )
 
     def _create_notification(self, session: Session, watch: Watch, price: int):
         payload = {
@@ -90,3 +111,9 @@ class Watcher:
         }
         notification = Notification(watch_id=watch.id, payload=json.dumps(payload))
         session.add(notification)
+        logger.info(
+            "watcher_notification_queued watch_id=%s user_id=%s hotel_code=%s",
+            watch.id,
+            watch.user_id,
+            watch.hotel_code,
+        )

@@ -148,3 +148,18 @@ def test_admin_api_key_create_and_toggle(client: TestClient, session: Session):
 
     session.refresh(key)
     assert not key.is_active
+
+
+def test_request_id_is_echoed_when_provided(client: TestClient):
+    request_id = "req-12345"
+    response = client.get("/status", headers={"X-Request-ID": request_id})
+    assert response.status_code == 200
+    assert response.headers["X-Request-ID"] == request_id
+
+
+def test_request_id_is_generated_when_missing(client: TestClient):
+    response = client.get("/status")
+    assert response.status_code == 200
+    generated = response.headers.get("X-Request-ID")
+    assert generated is not None
+    assert len(generated) > 0

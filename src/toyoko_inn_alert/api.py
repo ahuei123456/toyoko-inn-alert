@@ -1,9 +1,12 @@
 import json
+import logging
 import os
 import secrets
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -40,6 +43,7 @@ security = HTTPBasic()
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent / "templates")
 )
+logger = logging.getLogger("toyoko.api")
 
 
 def verify_api_key(
@@ -49,6 +53,7 @@ def verify_api_key(
     statement = select(APIKey).where(APIKey.key == x_api_key, APIKey.is_active)
     db_key = session.exec(statement).first()
     if not db_key:
+        logger.warning("api_key_auth_failed")
         raise HTTPException(status_code=401, detail="Invalid or revoked API Key")
     return db_key
 
@@ -59,6 +64,7 @@ def verify_admin(
     username_ok = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
     password_ok = secrets.compare_digest(credentials.password, ADMIN_PASSWORD)
     if not (username_ok and password_ok):
+        logger.warning("admin_auth_failed username=%s", credentials.username)
         raise HTTPException(
             status_code=401,
             detail="Invalid admin credentials",
@@ -70,6 +76,7 @@ def verify_admin(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Initialize DB
+    logger.info("app_startup initializing_database")
     create_db_and_tables()
 
     # 2. Setup Scheduler
@@ -92,14 +99,59 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
     app.state.scheduler = scheduler
+    logger.info(
+        "app_startup scheduler_started watcher_interval_seconds=%d "
+        "queue_interval_seconds=%d",
+        POLLING_INTERVAL_SECONDS,
+        QUEUE_INTERVAL_SECONDS,
+    )
 
     yield
 
     # 3. Shutdown
+    logger.info("app_shutdown scheduler_stopping")
     scheduler.shutdown()
+    logger.info("app_shutdown scheduler_stopped")
 
 
 app = FastAPI(title="Toyoko Inn Alert API", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+
+    client_ip = request.client.host if request.client else "-"
+    start = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = int((perf_counter() - start) * 1000)
+        logger.exception(
+            "http_request_error request_id=%s method=%s path=%s "
+            "duration_ms=%d client_ip=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+            client_ip,
+        )
+        raise
+
+    duration_ms = int((perf_counter() - start) * 1000)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "http_request request_id=%s method=%s path=%s status=%d "
+        "duration_ms=%d client_ip=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+        client_ip,
+    )
+    return response
 
 
 @app.post("/watches", response_model=Watch)
@@ -108,6 +160,12 @@ async def create_watch(
     session: Annotated[Session, Depends(get_session)],
     _: Annotated[APIKey, Depends(verify_api_key)],
 ):
+    logger.info(
+        "watch_create_requested user_id=%s hotel_code=%s",
+        watch.user_id,
+        watch.hotel_code,
+    )
+
     # Ensure dates are datetime objects
     if isinstance(watch.checkin_date, str):
         watch.checkin_date = datetime.fromisoformat(watch.checkin_date)
@@ -119,9 +177,20 @@ async def create_watch(
 
     # 1. Validation
     if watch.hotel_code not in HOTELS:
+        logger.warning(
+            "watch_create_rejected_invalid_hotel user_id=%s hotel_code=%s",
+            watch.user_id,
+            watch.hotel_code,
+        )
         raise HTTPException(status_code=400, detail="Invalid hotel code")
 
     if watch.checkin_date >= watch.checkout_date:
+        logger.warning(
+            "watch_create_rejected_invalid_dates user_id=%s checkin=%s checkout=%s",
+            watch.user_id,
+            watch.checkin_date.isoformat(),
+            watch.checkout_date.isoformat(),
+        )
         raise HTTPException(status_code=400, detail="Check-in must be before check-out")
 
     # 2. Deduplication check
@@ -134,6 +203,12 @@ async def create_watch(
         )
     ).first()
     if existing:
+        logger.info(
+            "watch_create_rejected_duplicate user_id=%s hotel_code=%s watch_id=%s",
+            watch.user_id,
+            watch.hotel_code,
+            existing.id,
+        )
         raise HTTPException(
             status_code=409, detail="Watch already exists for this user and date"
         )
@@ -151,6 +226,12 @@ async def create_watch(
         status = price_result.prices.get(watch.hotel_code)
         if status and status.existEnoughVacantRooms:
             watch.last_available = True
+            logger.info(
+                "watch_create_instant_hit user_id=%s hotel_code=%s price=%d",
+                watch.user_id,
+                watch.hotel_code,
+                status.lowestPrice,
+            )
 
             # 4. Immediate Notification Queue
             payload = {
@@ -171,14 +252,38 @@ async def create_watch(
             session.add(notification)
             session.commit()
             session.refresh(watch)
+            logger.info(
+                "watch_create_completed watch_id=%s user_id=%s hotel_code=%s "
+                "last_available=true",
+                watch.id,
+                watch.user_id,
+                watch.hotel_code,
+            )
             return watch
+        logger.info(
+            "watch_create_instant_hit_not_found user_id=%s hotel_code=%s",
+            watch.user_id,
+            watch.hotel_code,
+        )
     except Exception as e:
-        print(f"Instant hit check failed: {e}")
+        logger.exception(
+            "watch_create_instant_hit_failed user_id=%s hotel_code=%s error=%s",
+            watch.user_id,
+            watch.hotel_code,
+            e,
+        )
 
     # Not an instant hit or check failed
     session.add(watch)
     session.commit()
     session.refresh(watch)
+    logger.info(
+        "watch_create_completed watch_id=%s user_id=%s hotel_code=%s last_available=%s",
+        watch.id,
+        watch.user_id,
+        watch.hotel_code,
+        watch.last_available,
+    )
     return watch
 
 
@@ -189,6 +294,7 @@ def list_watches(
     _: Annotated[APIKey, Depends(verify_api_key)],
 ):
     watches = session.exec(select(Watch).where(Watch.user_id == user_id)).all()
+    logger.info("watch_list user_id=%s count=%d", user_id, len(watches))
     return watches
 
 
@@ -200,9 +306,17 @@ def delete_watch(
 ):
     watch = session.get(Watch, watch_id)
     if not watch:
+        logger.warning("watch_delete_not_found watch_id=%d", watch_id)
         raise HTTPException(status_code=404, detail="Watch not found")
+    logger.info(
+        "watch_delete_requested watch_id=%d user_id=%s hotel_code=%s",
+        watch.id,
+        watch.user_id,
+        watch.hotel_code,
+    )
     session.delete(watch)
     session.commit()
+    logger.info("watch_delete_completed watch_id=%d", watch_id)
     return {"ok": True}
 
 
@@ -271,6 +385,11 @@ def admin_create_api_key(
     new_key = APIKey(key=raw_key, client_name=cleaned_name)
     session.add(new_key)
     session.commit()
+    logger.info(
+        "admin_api_key_created key_id=%s client_name=%s",
+        new_key.id,
+        cleaned_name,
+    )
 
     redirect_url = request.url_for("admin_api_keys").include_query_params(
         created_key=raw_key
@@ -292,6 +411,12 @@ def admin_toggle_api_key(
     key.is_active = not key.is_active
     session.add(key)
     session.commit()
+    logger.info(
+        "admin_api_key_toggled key_id=%d client_name=%s is_active=%s",
+        key.id,
+        key.client_name,
+        key.is_active,
+    )
 
     return RedirectResponse(url=str(request.url_for("admin_api_keys")), status_code=303)
 
@@ -347,6 +472,11 @@ def admin_retry_notification(
     notification.last_retry = None
     session.add(notification)
     session.commit()
+    logger.info(
+        "admin_notification_retry notification_id=%d watch_id=%d",
+        notification.id,
+        notification.watch_id,
+    )
 
     redirect_url = request.url_for("admin_notifications")
     if status_filter in {"pending", "sent", "failed"}:

@@ -1,10 +1,14 @@
 import json
+import logging
 import urllib.parse
 from datetime import datetime
+from time import perf_counter
 
 import httpx
 
 from toyoko_inn_alert.models import PriceResult
+
+logger = logging.getLogger("toyoko.client")
 
 
 class ToyokoClient:
@@ -61,16 +65,35 @@ class ToyokoClient:
         encoded_input = urllib.parse.quote(json.dumps(input_data))
         path = "/hotels.availabilities.prices?batch=1&input="
         url = f"{self.BASE_URL}{path}{encoded_input}"
+        start = perf_counter()
 
         async with httpx.AsyncClient(
             headers=self.headers, timeout=self.timeout
         ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except Exception as e:
+                elapsed_ms = int((perf_counter() - start) * 1000)
+                logger.exception(
+                    "toyoko_prices_request_failed hotel_count=%d elapsed_ms=%d "
+                    "error=%s",
+                    len(hotel_codes),
+                    elapsed_ms,
+                    e,
+                )
+                raise
 
             data = response.json()
             # tRPC batch response is a list
             result = data[0]["result"]["data"]["json"]
+            elapsed_ms = int((perf_counter() - start) * 1000)
+            logger.info(
+                "toyoko_prices_request_ok hotel_count=%d status_code=%d elapsed_ms=%d",
+                len(hotel_codes),
+                response.status_code,
+                elapsed_ms,
+            )
             return PriceResult.model_validate(result)
 
     async def fetch_areas(self) -> dict:
@@ -81,10 +104,27 @@ class ToyokoClient:
         encoded_input = urllib.parse.quote(json.dumps(input_data))
         path = "/public.areas.list?batch=1&input="
         url = f"{self.BASE_URL}{path}{encoded_input}"
+        start = perf_counter()
 
         async with httpx.AsyncClient(
             headers=self.headers, timeout=self.timeout
         ) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+            except Exception as e:
+                elapsed_ms = int((perf_counter() - start) * 1000)
+                logger.exception(
+                    "toyoko_areas_request_failed elapsed_ms=%d error=%s",
+                    elapsed_ms,
+                    e,
+                )
+                raise
+
+            elapsed_ms = int((perf_counter() - start) * 1000)
+            logger.info(
+                "toyoko_areas_request_ok status_code=%d elapsed_ms=%d",
+                response.status_code,
+                elapsed_ms,
+            )
             return response.json()
