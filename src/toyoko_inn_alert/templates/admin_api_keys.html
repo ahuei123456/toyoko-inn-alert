@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% set title = "API Keys" %}
+
+{% block content %}
+<h1>API Key Management</h1>
+
+{% if created_key %}
+<div class="flash">
+  <strong>New key created:</strong><br />
+  {{ created_key }}
+</div>
+{% endif %}
+
+<section class="card">
+  <h2>Create Key</h2>
+  <form method="post" action="/admin/api-keys">
+    <label for="client_name">Client name:</label>
+    <input id="client_name" name="client_name" required placeholder="Discord Bot Prod" />
+    <button type="submit">Create</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Existing Keys</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Client</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Key Prefix</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for key in keys %}
+      <tr>
+        <td>{{ key.id }}</td>
+        <td>{{ key.client_name }}</td>
+        <td>
+          {% if key.is_active %}
+          <span class="status active">active</span>
+          {% else %}
+          <span class="status revoked">revoked</span>
+          {% endif %}
+        </td>
+        <td>{{ key.created_at }}</td>
+        <td>{{ key.key[:12] }}...</td>
+        <td>
+          <form class="inline" method="post" action="/admin/api-keys/{{ key.id }}/toggle">
+            {% if key.is_active %}
+            <button class="secondary" type="submit">Revoke</button>
+            {% else %}
+            <button type="submit">Activate</button>
+            {% endif %}
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

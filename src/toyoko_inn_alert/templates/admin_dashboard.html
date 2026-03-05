@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% set title = "Dashboard" %}
+
+{% block content %}
+<h1>Admin Dashboard</h1>
+
+<div class="grid">
+  <section class="card">
+    <div class="metric-label">Active Watches</div>
+    <div class="metric-value">{{ watch_count }}</div>
+  </section>
+  <section class="card">
+    <div class="metric-label">Pending Alerts</div>
+    <div class="metric-value">{{ pending_count }}</div>
+  </section>
+  <section class="card">
+    <div class="metric-label">Failed Alerts</div>
+    <div class="metric-value">{{ failed_count }}</div>
+  </section>
+  <section class="card">
+    <div class="metric-label">API Keys</div>
+    <div class="metric-value">{{ key_count }}</div>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Quick Actions</h2>
+  <p class="muted">Use these links to manage clients and alert delivery.</p>
+  <p>
+    <a href="/admin/api-keys">Manage API keys</a> |
+    <a href="/admin/notifications">Inspect notifications</a>
+  </p>
+</section>
+{% endblock %}

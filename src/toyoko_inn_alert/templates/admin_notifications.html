@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% set title = "Notifications" %}
+
+{% block content %}
+<h1>Notification Queue</h1>
+
+<section class="card">
+  <h2>Filters</h2>
+  <form method="get" action="/admin/notifications">
+    <label for="status">Status:</label>
+    <select id="status" name="status">
+      <option value="">all</option>
+      <option value="pending" {% if status_filter == "pending" %}selected{% endif %}>pending</option>
+      <option value="sent" {% if status_filter == "sent" %}selected{% endif %}>sent</option>
+      <option value="failed" {% if status_filter == "failed" %}selected{% endif %}>failed</option>
+    </select>
+
+    <label for="limit">Limit:</label>
+    <input id="limit" name="limit" type="number" value="{{ limit }}" min="1" max="500" />
+    <button type="submit">Apply</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Recent Notifications</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Status</th>
+        <th>Watch</th>
+        <th>Retries</th>
+        <th>Payload</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.notification.id }}</td>
+        <td>
+          <span class="status {{ row.notification.status }}">
+            {{ row.notification.status }}
+          </span>
+        </td>
+        <td>
+          {% if row.watch %}
+          hotel={{ row.watch.hotel_code }}<br />
+          user={{ row.watch.user_id }}
+          {% else %}
+          <span class="muted">Missing watch</span>
+          {% endif %}
+        </td>
+        <td>
+          {{ row.notification.retry_count }}<br />
+          <span class="muted">{{ row.notification.last_retry }}</span>
+        </td>
+        <td>
+          <pre class="payload">{{ row.notification.payload }}</pre>
+        </td>
+        <td>
+          <form class="inline" method="post" action="/admin/notifications/{{ row.notification.id }}/retry">
+            <input type="hidden" name="status_filter" value="{{ status_filter or '' }}" />
+            <button type="submit">Retry</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

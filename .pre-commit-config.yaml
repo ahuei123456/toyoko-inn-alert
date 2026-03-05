@@ -6,15 +6,23 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-added-large-files
+        args: [--maxkb=1200]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.4
+  - repo: local
     hooks:
       - id: ruff
-        args: [ --fix ]
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
       - id: ruff-format
-
-  - repo: https://github.com/facebook/pyrefly-pre-commit
-    rev: 0.55.0
-    hooks:
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types: [python]
       - id: pyrefly-check
+        name: pyrefly-check
+        entry: uv run pyrefly check
+        language: system
+        pass_filenames: false
+        types: [python]

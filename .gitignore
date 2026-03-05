@@ -205,3 +205,14 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Databases
+*.db
+
+# Project data artifacts (generated/raw)
+data/result.json
+data/prices.json
+
+# Keep canonical datasets tracked
+!data/hotels.json
+!data/areas.json
