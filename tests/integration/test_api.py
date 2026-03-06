@@ -1,5 +1,7 @@
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -9,7 +11,9 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from sqlmodel.pool import StaticPool
 
 from toyoko_inn_alert.api import ADMIN_PASSWORD, ADMIN_USERNAME, app, get_session
+from toyoko_inn_alert.client import ToyokoClient
 from toyoko_inn_alert.db import APIKey, Watch
+from toyoko_inn_alert.models import HotelPriceStatus, PriceResult
 
 
 # Setup in-memory database for testing
@@ -46,6 +50,32 @@ def client_fixture(session: Session, monkeypatch):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(name="sqlite_file_engine")
+def sqlite_file_engine_fixture(tmp_path: Path):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrency.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(APIKey(key="test_key", client_name="Test Client"))
+        session.commit()
+    return engine
+
+
+@pytest.fixture(name="file_backed_sessions")
+def file_backed_sessions_fixture(sqlite_file_engine, monkeypatch):
+    monkeypatch.setenv("WEBHOOK_SIGNATURE_SECRET", "test-signing-secret")
+
+    def get_session_override():
+        with Session(sqlite_file_engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = get_session_override
+    yield sqlite_file_engine
+    app.dependency_overrides.clear()
+
+
 def _assert_error_contract(
     response,
     expected_status: int,
@@ -58,6 +88,35 @@ def _assert_error_contract(
     assert detail["code"] == expected_code
     if expected_message is not None:
         assert detail["message"] == expected_message
+
+
+def _watch_payload(
+    *,
+    hotel_code: str = "00088",
+    user_id: str = "user123",
+    day_offset: int = 10,
+) -> dict[str, str]:
+    checkin = datetime.now() + timedelta(days=day_offset)
+    checkout = datetime.now() + timedelta(days=day_offset + 1)
+    return {
+        "hotel_code": hotel_code,
+        "checkin_date": checkin.isoformat(),
+        "checkout_date": checkout.isoformat(),
+        "user_id": user_id,
+        "callback_url": "https://example.com/callback",
+    }
+
+
+def _sold_out_price_result(hotel_code: str) -> PriceResult:
+    return PriceResult(
+        prices={
+            hotel_code: HotelPriceStatus(
+                lowestPrice=0,
+                existEnoughVacantRooms=False,
+                isUnderMaintenance=False,
+            )
+        }
+    )
 
 
 def test_create_watch_success(client: TestClient, api_key: str):
@@ -97,6 +156,122 @@ def test_create_watch_success(client: TestClient, api_key: str):
         assert data["hotel_code"] == "00088"
         assert data["user_id"] == "user123"
         assert data["last_available"] is False
+
+
+def test_create_watch_duplicate_race_returns_single_success(
+    file_backed_sessions,
+    monkeypatch,
+):
+    async def fake_fetch_prices(
+        self,
+        hotel_codes,
+        checkin_date,
+        checkout_date,
+        num_people=1,
+        num_rooms=1,
+        smoking_type="noSmoking",
+    ):
+        return _sold_out_price_result(hotel_codes[0])
+
+    monkeypatch.setattr(ToyokoClient, "fetch_prices", fake_fetch_prices)
+
+    payload = _watch_payload(user_id="race_dup", day_offset=30)
+
+    def create_watch_request():
+        with TestClient(app) as client:
+            return client.post(
+                "/watches",
+                json=payload,
+                headers={"X-API-Key": "test_key"},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(create_watch_request) for _ in range(2)]
+        responses = [future.result() for future in futures]
+
+    status_codes = sorted(response.status_code for response in responses)
+    assert status_codes == [200, 409]
+
+    error_response = next(
+        response for response in responses if response.status_code == 409
+    )
+    _assert_error_contract(
+        error_response,
+        409,
+        "DUPLICATE_WATCH",
+        "Watch already exists for this user and date",
+    )
+
+    with Session(file_backed_sessions) as session:
+        watches = session.exec(select(Watch).where(Watch.user_id == "race_dup")).all()
+        assert len(watches) == 1
+
+
+def test_create_watch_max_active_watches_race_caps_at_ten(
+    file_backed_sessions,
+    monkeypatch,
+):
+    async def fake_fetch_prices(
+        self,
+        hotel_codes,
+        checkin_date,
+        checkout_date,
+        num_people=1,
+        num_rooms=1,
+        smoking_type="noSmoking",
+    ):
+        return _sold_out_price_result(hotel_codes[0])
+
+    monkeypatch.setattr(ToyokoClient, "fetch_prices", fake_fetch_prices)
+
+    with Session(file_backed_sessions) as session:
+        for i in range(9):
+            session.add(
+                Watch(
+                    hotel_code="00088",
+                    checkin_date=datetime.now() + timedelta(days=i),
+                    checkout_date=datetime.now() + timedelta(days=i + 1),
+                    user_id="race_max",
+                    callback_url="https://example.com/callback",
+                )
+            )
+        session.commit()
+
+    payloads = [
+        _watch_payload(hotel_code="00088", user_id="race_max", day_offset=60),
+        _watch_payload(hotel_code="00099", user_id="race_max", day_offset=61),
+    ]
+
+    def create_watch_request(payload):
+        with TestClient(app) as client:
+            return client.post(
+                "/watches",
+                json=payload,
+                headers={"X-API-Key": "test_key"},
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(create_watch_request, payload) for payload in payloads
+        ]
+        responses = [future.result() for future in futures]
+
+    status_codes = sorted(response.status_code for response in responses)
+    assert status_codes == [200, 409]
+
+    error_response = next(
+        response for response in responses if response.status_code == 409
+    )
+    _assert_error_contract(
+        error_response,
+        409,
+        "MAX_ACTIVE_WATCHES",
+        "You can only have up to 10 active watches.",
+    )
+
+    with Session(file_backed_sessions) as session:
+        count = session.exec(select(Watch).where(Watch.user_id == "race_max")).all()
+        assert len(count) == 10
 
 
 def test_create_watch_invalid_hotel(client: TestClient, api_key: str):

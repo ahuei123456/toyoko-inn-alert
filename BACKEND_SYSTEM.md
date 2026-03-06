@@ -205,7 +205,7 @@ The frontend MUST implement an endpoint that accepts this POST body:
 - [x] Add configurable `WEBHOOK_SIGNATURE_SECRET` for signing.
 - [x] Enforce max 10 active watches per `user_id` in `POST /watches`.
 - [x] Return machine-readable error code `MAX_ACTIVE_WATCHES` when limit is exceeded.
-- [ ] Make max-watch enforcement concurrency-safe (prevent race conditions under parallel `POST /watches` requests).
+- [x] Make max-watch enforcement concurrency-safe (prevent race conditions under parallel `POST /watches` requests).
 - [x] Standardize date-range error code on `INVALID_DATE_RANGE`.
 
 ### Priority 2 (Strongly Recommended)

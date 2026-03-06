@@ -1,6 +1,9 @@
 from datetime import UTC, datetime
 
-from sqlmodel import Field, Session, SQLModel, create_engine
+from sqlalchemy import event
+from sqlmodel import Field, Index, Session, SQLModel, create_engine
+
+WATCH_UNIQUE_INDEX_NAME = "ix_watch_unique_user_hotel_stay"
 
 
 def get_now():
@@ -8,6 +11,17 @@ def get_now():
 
 
 class Watch(SQLModel, table=True):
+    __table_args__ = (
+        Index(
+            WATCH_UNIQUE_INDEX_NAME,
+            "user_id",
+            "hotel_code",
+            "checkin_date",
+            "checkout_date",
+            unique=True,
+        ),
+    )
+
     id: int | None = Field(default=None, primary_key=True)
     hotel_code: str = Field(index=True)
     checkin_date: datetime
@@ -46,8 +60,23 @@ connect_args = {"check_same_thread": False}
 engine = create_engine(sqlite_url, connect_args=connect_args)
 
 
+@event.listens_for(engine, "connect")
+def configure_sqlite_connection(dbapi_connection, connection_record):
+    del connection_record
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
+
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            f"{WATCH_UNIQUE_INDEX_NAME} "
+            "ON watch (user_id, hotel_code, checkin_date, checkout_date)"
+        )
 
 
 def get_session():

@@ -1,22 +1,22 @@
-import asyncio
 import json
 import logging
 import os
 import secrets
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, Any
 
+from anyio import to_thread
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from toyoko_inn_alert.client import ToyokoClient
@@ -39,9 +39,6 @@ HOTELS = load_hotels("data/hotels.json")
 POLLING_INTERVAL_SECONDS = 3600
 QUEUE_INTERVAL_SECONDS = 60
 
-# Concurrency lock per user
-_user_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")
 
@@ -54,6 +51,119 @@ logger = logging.getLogger("toyoko.api")
 
 def error_detail(code: str, message: str) -> dict[str, str]:
     return {"code": code, "message": message}
+
+
+def _begin_immediate(session: Session) -> None:
+    # SQLite needs an immediate write transaction so the count + insert path
+    # is serialized across concurrent API workers.
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
+def _create_watch_record(bind: Any, watch: Watch) -> int:
+    with Session(bind=bind) as write_session:
+        _begin_immediate(write_session)
+        try:
+            existing = write_session.exec(
+                select(Watch).where(
+                    Watch.hotel_code == watch.hotel_code,
+                    Watch.checkin_date == watch.checkin_date,
+                    Watch.checkout_date == watch.checkout_date,
+                    Watch.user_id == watch.user_id,
+                )
+            ).first()
+            if existing:
+                logger.info(
+                    "watch_create_rejected_duplicate user_id=%s hotel_code=%s "
+                    "watch_id=%s",
+                    watch.user_id,
+                    watch.hotel_code,
+                    existing.id,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=error_detail(
+                        "DUPLICATE_WATCH",
+                        "Watch already exists for this user and date",
+                    ),
+                )
+
+            active_watches_count = write_session.exec(
+                select(func.count())
+                .select_from(Watch)
+                .where(Watch.user_id == watch.user_id)
+            ).one()
+            if active_watches_count >= 10:
+                logger.warning(
+                    "watch_create_rejected_max_watches user_id=%s count=%d",
+                    watch.user_id,
+                    active_watches_count,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=error_detail(
+                        "MAX_ACTIVE_WATCHES",
+                        "You can only have up to 10 active watches.",
+                    ),
+                )
+
+            write_session.add(watch)
+            write_session.commit()
+            write_session.refresh(watch)
+            if watch.id is None:
+                raise RuntimeError("Watch insert completed without an ID")
+            return watch.id
+        except HTTPException:
+            write_session.rollback()
+            raise
+        except IntegrityError:
+            write_session.rollback()
+            logger.info(
+                "watch_create_rejected_duplicate_db user_id=%s hotel_code=%s",
+                watch.user_id,
+                watch.hotel_code,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=error_detail(
+                    "DUPLICATE_WATCH",
+                    "Watch already exists for this user and date",
+                ),
+            ) from None
+        except Exception:
+            write_session.rollback()
+            raise
+
+
+def _load_watch(bind: Any, watch_id: int) -> Watch:
+    with Session(bind=bind) as read_session:
+        watch = read_session.get(Watch, watch_id)
+        if watch is None:
+            raise RuntimeError(f"Watch {watch_id} disappeared during request")
+        return watch
+
+
+def _queue_instant_hit_notification(
+    bind: Any,
+    watch_id: int,
+    payload: dict[str, Any],
+) -> None:
+    with Session(bind=bind) as update_session:
+        persisted_watch = update_session.get(Watch, watch_id)
+        if persisted_watch is None:
+            logger.warning(
+                "watch_create_instant_hit_watch_missing watch_id=%s",
+                watch_id,
+            )
+            return
+
+        persisted_watch.last_available = True
+        notification = Notification(
+            watch_id=persisted_watch.id,
+            payload=json.dumps(payload),
+        )
+        update_session.add(persisted_watch)
+        update_session.add(notification)
+        update_session.commit()
 
 
 def verify_api_key(
@@ -221,122 +331,62 @@ async def create_watch(
             ),
         )
 
-    async with _user_locks[watch.user_id]:
-        # 2. Max Active Watches check
-        active_watches_count = session.exec(
-            select(func.count())
-            .select_from(Watch)
-            .where(Watch.user_id == watch.user_id)
-        ).one()
+    bind = session.get_bind()
+    watch_id = await to_thread.run_sync(_create_watch_record, bind, watch)
 
-        if active_watches_count >= 10:
-            logger.warning(
-                "watch_create_rejected_max_watches user_id=%s count=%d",
-                watch.user_id,
-                active_watches_count,
-            )
-            raise HTTPException(
-                status_code=409,
-                detail=error_detail(
-                    "MAX_ACTIVE_WATCHES",
-                    "You can only have up to 10 active watches.",
-                ),
-            )
-
-        # 3. Deduplication check
-        existing = session.exec(
-            select(Watch).where(
-                Watch.hotel_code == watch.hotel_code,
-                Watch.checkin_date == watch.checkin_date,
-                Watch.checkout_date == watch.checkout_date,
-                Watch.user_id == watch.user_id,
-            )
-        ).first()
-        if existing:
+    # 2. Instant Hit Check runs after the initial insert is committed so the
+    # SQLite write lock is not held while the external HTTP request is in flight.
+    client = ToyokoClient()
+    try:
+        price_result = await client.fetch_prices(
+            [watch.hotel_code],
+            watch.checkin_date,
+            watch.checkout_date,
+            num_people=watch.num_people,
+            smoking_type=watch.smoking_type,
+        )
+        status = price_result.prices.get(watch.hotel_code)
+        if status and status.existEnoughVacantRooms:
             logger.info(
-                "watch_create_rejected_duplicate user_id=%s hotel_code=%s watch_id=%s",
+                "watch_create_instant_hit user_id=%s hotel_code=%s price=%d",
                 watch.user_id,
                 watch.hotel_code,
-                existing.id,
+                status.lowestPrice,
             )
-            raise HTTPException(
-                status_code=409,
-                detail=error_detail(
-                    "DUPLICATE_WATCH",
-                    "Watch already exists for this user and date",
-                ),
+            payload = build_webhook_payload(
+                event="INSTANT_HIT",
+                watch=watch,
+                price=status.lowestPrice,
             )
-
-        # 4. Instant Hit Check
-        client = ToyokoClient()
-        try:
-            price_result = await client.fetch_prices(
-                [watch.hotel_code],
-                watch.checkin_date,
-                watch.checkout_date,
-                num_people=watch.num_people,
-                smoking_type=watch.smoking_type,
+            await to_thread.run_sync(
+                _queue_instant_hit_notification,
+                bind,
+                watch_id,
+                payload,
             )
-            status = price_result.prices.get(watch.hotel_code)
-            if status and status.existEnoughVacantRooms:
-                watch.last_available = True
-                logger.info(
-                    "watch_create_instant_hit user_id=%s hotel_code=%s price=%d",
-                    watch.user_id,
-                    watch.hotel_code,
-                    status.lowestPrice,
-                )
-
-                # 5. Immediate Notification Queue
-                payload = build_webhook_payload(
-                    event="INSTANT_HIT",
-                    watch=watch,
-                    price=status.lowestPrice,
-                )
-                # We need to save the watch first to get an ID
-                session.add(watch)
-                session.flush()  # Ensure watch.id is generated
-
-                notification = Notification(
-                    watch_id=watch.id, payload=json.dumps(payload)
-                )
-                session.add(notification)
-                session.commit()
-                session.refresh(watch)
-                logger.info(
-                    "watch_create_completed watch_id=%s user_id=%s hotel_code=%s "
-                    "last_available=true",
-                    watch.id,
-                    watch.user_id,
-                    watch.hotel_code,
-                )
-                return watch
+        else:
             logger.info(
                 "watch_create_instant_hit_not_found user_id=%s hotel_code=%s",
                 watch.user_id,
                 watch.hotel_code,
             )
-        except Exception as e:
-            logger.exception(
-                "watch_create_instant_hit_failed user_id=%s hotel_code=%s error=%s",
-                watch.user_id,
-                watch.hotel_code,
-                e,
-            )
-
-        # Not an instant hit or check failed
-        session.add(watch)
-        session.commit()
-        session.refresh(watch)
-        logger.info(
-            "watch_create_completed watch_id=%s user_id=%s "
-            "hotel_code=%s last_available=%s",
-            watch.id,
+    except Exception as e:
+        logger.exception(
+            "watch_create_instant_hit_failed user_id=%s hotel_code=%s error=%s",
             watch.user_id,
             watch.hotel_code,
-            watch.last_available,
+            e,
         )
-        return watch
+
+    persisted_watch = await to_thread.run_sync(_load_watch, bind, watch_id)
+    logger.info(
+        "watch_create_completed watch_id=%s user_id=%s hotel_code=%s last_available=%s",
+        persisted_watch.id,
+        persisted_watch.user_id,
+        persisted_watch.hotel_code,
+        persisted_watch.last_available,
+    )
+    return persisted_watch
 
 
 @app.get("/watches/{user_id}", response_model=list[Watch])
